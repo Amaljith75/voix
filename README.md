@@ -45,7 +45,7 @@ opens in your browser at `http://127.0.0.1:8000`. Close the window to stop.
   `http://<this-PC's-IP>:8000` from the other device.
 
 The exe is built by GitHub Actions (`.github/workflows/build-windows.yml`) on
-every `v*` tag.
+every push to `main` that changes the app, and published as a new release.
 
 ## Run it from source
 

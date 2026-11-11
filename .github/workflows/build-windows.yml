@@ -2,7 +2,8 @@ name: Build Windows app
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["backend/**", "frontend/**", ".github/workflows/build-windows.yml"]
   workflow_dispatch:
 
 permissions:
@@ -65,9 +66,11 @@ jobs:
           path: backend/dist/VOIX.exe
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v0.1.${{ github.run_number }}
+          name: VOIX v0.1.${{ github.run_number }}
+          make_latest: true
           files: backend/dist/VOIX.exe
           body: |
             Download **VOIX.exe** and double-click it. It opens the studio in your browser.

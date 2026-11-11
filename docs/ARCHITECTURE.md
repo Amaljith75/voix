@@ -38,13 +38,13 @@ VOIX never calls an LLM. The only input is text plus a voice or character ID.
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 Foundation | Backend, database, secure importer, inspection, detection, model library, studio shell | Done |
-| 2 First engine | Piper adapter, text normalisation (Malayalam numbers, mixed script), sentence chunking, WAV/MP3, Malayalam pronunciation suite | Next |
+| 2 First engine | Piper adapter, text normalisation, mixed-script routing, sentence chunking, WAV/MP3, jobs, cache, history, starter voices | Done. Open: a listening review of Malayalam pronunciation |
 | 3 Universal models | Indic Parler-TTS, GPT-SoVITS, VITS adapters; RVC post-stage; model lifecycle and VRAM management | |
 | 4 Studio | Voice library, real generation controls, waveform player, history | |
 | 5 API + SCOL | Jobs, batch, chunked streaming, API keys per client, rate limits, quotas, signed audio URLs, Expo test app | |
 | 6 Production | Redis/Celery workers, PostgreSQL, S3 storage, Docker + NVIDIA toolkit, benchmarks, security review | |
 
-## Known gaps in Phase 1
+## Known gaps
 
 - Detection for RVC, GPT-SoVITS, VITS and XTTS is tested on structural
   fixtures, not on real community checkpoints.

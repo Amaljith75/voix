@@ -7,17 +7,20 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..config import Settings, get_settings
-from ..db import AuditLog, Character, Voice, VoiceModel, audit, get_session
+from .. import catalog
+from ..audio.processing import mp3_available
+from ..db import AuditLog, Character, Generation, Voice, VoiceModel, audit, get_session
 from ..engines.registry import describe_engines
 from ..hardware import detect_hardware
 from ..importer.service import ImportRejected, import_zip, serialize
+from ..tts import service as tts
 
 router = APIRouter(prefix="/api/v1")
 
@@ -56,6 +59,9 @@ def config(settings: Settings = Depends(get_settings)):
         "max_extracted_mb": settings.max_extracted_bytes // 1024**2,
         "max_zip_entries": settings.max_zip_entries,
         "database": settings.database_url.split(":", 1)[0],
+        "cache_enabled": settings.cache_enabled,
+        "mp3": mp3_available()[0],
+        "loaded_models": tts.manager().loaded(),
     }
 
 
@@ -142,6 +148,14 @@ def delete_model(
     path = Path(model.storage_path).resolve()
     if path.is_relative_to(settings.models_dir.resolve()) and path != settings.models_dir.resolve():
         shutil.rmtree(path, ignore_errors=True)
+    for voice in session.scalars(select(Voice).where(Voice.model_id == model_id)).all():
+        for character in session.scalars(select(Character)).all():
+            if character.voice_ml == voice.id:
+                character.voice_ml = None
+            if character.voice_en == voice.id:
+                character.voice_en = None
+        session.delete(voice)
+    tts.manager().unload(model_id)
     session.delete(model)
     audit(session, "model.delete", model_id=model_id, name=model.name)
     session.commit()
@@ -149,13 +163,47 @@ def delete_model(
 
 # ---------------------------------------------------------------- voices
 
+def _voice(session: Session, v: Voice) -> dict:
+    model = session.get(VoiceModel, v.model_id)
+    status = tts.inference_status(model.architecture) if model else {"ready": False, "reason": "model was deleted"}
+    return {
+        "id": v.id, "name": v.name, "description": v.description, "model_id": v.model_id,
+        "languages": v.languages, "architecture": model.architecture if model else None,
+        "license": model.license if model else "unknown",
+        "license_status": model.license_status if model else "unknown",
+        "ready": status["ready"], "reason": status["reason"],
+        "parameters": tts.voice_parameters(model) if model else [],
+        "streaming": "chunked",
+    }
+
+
 @router.get("/voices")
 def list_voices(session: Session = Depends(get_session)):
-    rows = session.scalars(select(Voice).order_by(Voice.name)).all()
-    return [
-        {"id": v.id, "name": v.name, "description": v.description, "model_id": v.model_id, "languages": v.languages}
-        for v in rows
-    ]
+    return [_voice(session, v) for v in session.scalars(select(Voice).order_by(Voice.name)).all()]
+
+
+@router.get("/voices/{voice_id}")
+def get_voice(voice_id: str, session: Session = Depends(get_session)):
+    voice = session.get(Voice, voice_id)
+    if not voice:
+        raise HTTPException(404, "voice not found")
+    return _voice(session, voice)
+
+
+@router.get("/catalog")
+def voice_catalog(session: Session = Depends(get_session)):
+    return catalog.describe(session)
+
+
+@router.post("/catalog/{entry_id}/install", status_code=201, dependencies=[Depends(require_key)])
+def install_catalog_voice(
+    entry_id: str, session: Session = Depends(get_session), settings: Settings = Depends(get_settings)
+):
+    try:
+        model = catalog.install(session, settings, entry_id)
+    except ImportRejected as exc:
+        return JSONResponse({"detail": exc.message, "report": exc.report}, status_code=exc.status)
+    return serialize(model, full=True)
 
 
 # ---------------------------------------------------------------- characters
@@ -231,18 +279,103 @@ class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
     voice_id: str | None = None
     character_id: str | None = None
-    language: str = "en"
+    language: str = Field(default="auto", pattern="^(en|ml|auto)$")
     output_format: str = Field(default="mp3", pattern="^(mp3|wav)$")
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    params: dict[str, float] = Field(default_factory=dict)
+    use_cache: bool = True
 
 
-@router.post("/tts/generate", dependencies=[Depends(require_key)])
-def tts_generate(body: TTSRequest):
-    """The request contract is final; synthesis arrives with the first engine adapter."""
-    if not any(e["ready"] and e["kind"] == "tts" for e in describe_engines()):
-        raise HTTPException(
-            501,
-            "No TTS engine adapter is installed yet (Phase 2). The request was valid, "
-            "but VOIX will not return placeholder audio.",
+def _job(job: Generation, cached: bool = False) -> dict:
+    data = {
+        "job_id": job.id, "status": job.status, "cached": cached, "language": job.language,
+        "voice_id": job.voice_id, "character_id": job.character_id, "output_format": job.output_format,
+        "text": job.text, "params": job.params, "warnings": job.warnings,
+        "created_at": job.created_at.isoformat(),
+    }
+    if job.status == "completed":
+        data |= {
+            "audio_id": job.id, "audio_url": f"/api/v1/audio/{job.id}",
+            "audio_seconds": job.audio_seconds, "generation_seconds": job.generation_seconds,
+            "sample_rate": job.sample_rate, "chunks": job.chunks,
+            # Piper returns whole sentences, so this is chunked generation, not streaming.
+            "mode": "chunked",
+        }
+    if job.status == "failed":
+        data["error"] = job.error
+    return data
+
+
+@router.post("/tts/generate", status_code=202, dependencies=[Depends(require_key)])
+def tts_generate(
+    body: TTSRequest, session: Session = Depends(get_session), settings: Settings = Depends(get_settings)
+):
+    """Queue a generation. Poll GET /tts/jobs/{job_id} until status is completed or failed."""
+    if body.output_format == "mp3" and not mp3_available()[0]:
+        raise HTTPException(422, mp3_available()[1])
+    speed = body.speed
+    if body.character_id and "speed" not in body.model_fields_set:
+        character = session.get(Character, body.character_id)
+        speed = character.default_speed if character else speed
+    try:
+        job, cached = tts.submit(
+            session, settings, text=body.text, voice_id=body.voice_id, character_id=body.character_id,
+            language=body.language, output_format=body.output_format,
+            params={"speed": speed, **body.params}, use_cache=body.use_cache,
         )
-    raise HTTPException(501, "generation pipeline not implemented")
+    except tts.TTSRequestError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    return _job(job, cached)
+
+
+def _get_job(session: Session, job_id: str) -> Generation:
+    job = session.get(Generation, job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+@router.get("/tts/jobs/{job_id}")
+def tts_job(job_id: str, session: Session = Depends(get_session)):
+    return _job(_get_job(session, job_id))
+
+
+@router.get("/audio/{audio_id}")
+def get_audio(audio_id: str, format: str | None = None, download: bool = False,
+              session: Session = Depends(get_session)):
+    job = _get_job(session, audio_id)
+    if job.status != "completed" or not Path(job.audio_path).is_file():
+        raise HTTPException(404, "audio not available")
+    fmt = format or job.output_format
+    if fmt not in ("wav", "mp3"):
+        raise HTTPException(422, "format must be wav or mp3")
+    try:
+        data = tts.audio_bytes(job, fmt)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    headers = {"Content-Disposition": f'attachment; filename="voix-{job.id[:8]}.{fmt}"'} if download else {}
+    return Response(data, media_type="audio/mpeg" if fmt == "mp3" else "audio/wav", headers=headers)
+
+
+# ---------------------------------------------------------------- history
+
+@router.get("/history")
+def history(q: str = "", voice_id: str = "", language: str = "", limit: int = 50,
+            session: Session = Depends(get_session)):
+    query = select(Generation).order_by(Generation.created_at.desc()).limit(min(max(limit, 1), 200))
+    if q:
+        query = query.where(Generation.text.contains(q))
+    if voice_id:
+        query = query.where(Generation.voice_id == voice_id)
+    if language:
+        query = query.where(Generation.language == language)
+    return [_job(j) for j in session.scalars(query).all()]
+
+
+@router.delete("/history/{job_id}", status_code=204, dependencies=[Depends(require_key)])
+def delete_history(job_id: str, session: Session = Depends(get_session)):
+    job = _get_job(session, job_id)
+    tts.delete_audio(job)
+    session.delete(job)
+    audit(session, "generation.delete", job_id=job_id)
+    session.commit()

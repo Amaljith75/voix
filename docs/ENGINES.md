@@ -1,8 +1,8 @@
 # Engine recommendation for Malayalam and English
 
-Status: research only. **No engine has been run or listened to yet.** Language
-support below is what each project declares; VOIX will not mark a voice as
-Malayalam-capable until it passes the pronunciation suite in Phase 2.
+Status: Piper is built in and generates Malayalam and English on CPU. Its
+output has been checked for duration, level and format, **not listened to**.
+Language support for the other engines is what each project declares.
 
 ## Recommendation
 
@@ -14,7 +14,7 @@ voice's timbre on top of real TTS output.
 
 | Engine | Malayalam | English | Runs on | License position | Role in VOIX |
 | --- | --- | --- | --- | --- | --- |
-| Piper | Yes, per-voice models (`ml_IN`) | Yes | CPU, real time | Engine: the archived `rhasspy/piper` is MIT. Check the licence of the maintained fork before bundling it. Voices are licensed individually. | Phase 2, first engine |
+| Piper | Yes, per-voice models (`ml_IN`) | Yes | CPU, faster than real time | The `piper-tts` package VOIX bundles is GPL-3.0-or-later. Voices are licensed individually. | Built in |
 | Indic Parler-TTS (AI4Bharat) | Yes (declared) | Yes | GPU, slow | Apache-2.0 | Phase 3, quality engine |
 | GPT-SoVITS | No text frontend for Malayalam | Yes | GPU | MIT code; each fine-tune has its own terms | Phase 3, English / cloning only |
 | Coqui XTTS-v2 | No (17 languages, Malayalam not among them) | Yes | GPU | Coqui Public Model License: non-commercial | Not for SCOL production |
@@ -25,11 +25,19 @@ development machine (no GPU needed), has ready Malayalam voices, and has a
 small, stable inference path (ONNX Runtime). It gets a real end-to-end
 pipeline working before any GPU money is spent.
 
-## Malayalam voices to evaluate in Phase 2
+## Hardware reality
+
+On a laptop without an NVIDIA GPU (for example an Intel i3 with 12 GB RAM)
+Piper is the only engine in this table that is practical. Indic Parler-TTS,
+GPT-SoVITS, XTTS, Chatterbox and Qwen3-TTS are transformer models that take
+many seconds to minutes per sentence on such a CPU. They belong on a GPU
+server later.
+
+## Malayalam voices
 
 | Voice | Format | Licence note |
 | --- | --- | --- |
-| IMaSC Malayalam TTS | Piper-compatible | Released under Apache-2.0. Best first candidate for commercial use. |
+| IMaSC Malayalam TTS | Piper-compatible | Released under Apache-2.0. Best candidate for commercial use. Not in the starter catalog because its download location could not be confirmed; import it as a ZIP once you have the `.onnx` and `.onnx.json`. |
 | `ml_IN-meera-medium`, `ml_IN-arjun-medium` (rhasspy/piper-voices) | Piper | Trained on the Indic TTS Malayalam corpus; the model card defers to the dataset's own licence. **Treat as unknown until that licence is read.** VOIX flags it as such on import. |
 
 ## About the Discord voice library

@@ -12,9 +12,15 @@ export function KindBadge({ model }: { model: Model }) {
   return <Badge>Unidentified</Badge>;
 }
 
-export function LicenseBadge({ model }: { model: Model }) {
-  const tone = { permissive: "lime", conditional: "amber", noncommercial: "red", unknown: "amber" }[model.license_status] as "lime" | "amber" | "red";
-  return <Badge tone={tone}>{model.license_status === "unknown" ? "License unknown" : model.license}</Badge>;
+const LICENSE_TONE = { permissive: "lime", conditional: "amber", noncommercial: "red", unknown: "amber" } as const;
+
+export function licenseLabel(license: string, status: Model["license_status"]) {
+  if (license !== "unknown") return license;
+  return status === "unknown" ? "License unknown" : `Marked ${status} by you`;
+}
+
+export function LicenseBadge({ model }: { model: Pick<Model, "license" | "license_status"> }) {
+  return <Badge tone={LICENSE_TONE[model.license_status]}>{licenseLabel(model.license, model.license_status)}</Badge>;
 }
 
 export function Languages({ model }: { model: Model }) {

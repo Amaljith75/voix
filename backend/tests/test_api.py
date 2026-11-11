@@ -9,9 +9,9 @@ from .conftest import upload
 from .test_inspection import _Exploit
 
 
-def test_health_reports_no_tts_engine(client):
+def test_health(client):
     body = client.get("/api/v1/health").json()
-    assert body["status"] == "ok" and body["models"] == 0 and body["tts_ready"] is False
+    assert body["status"] == "ok" and body["models"] == 0 and body["tts_ready"] is True
 
 
 def test_import_rvc_end_to_end(client, settings):
@@ -89,9 +89,3 @@ def test_characters_crud(client):
     assert client.put("/api/v1/characters/friendly_teacher", json={"name": "Friendly Teacher", "description": "Warm"}).json()["description"] == "Warm"
     assert client.delete("/api/v1/characters/friendly_teacher").status_code == 204
     assert client.get("/api/v1/characters").json() == []
-
-
-def test_tts_generate_is_honest_until_an_engine_exists(client):
-    res = client.post("/api/v1/tts/generate", json={"text": "നമസ്കാരം", "language": "ml"})
-    assert res.status_code == 501 and "placeholder" in res.json()["detail"]
-    assert all(not e["ready"] for e in client.get("/api/v1/engines").json())

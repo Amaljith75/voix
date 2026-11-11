@@ -12,8 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..db import VoiceModel, audit
-from ..engines.registry import inference_status
+from ..db import Voice, VoiceModel, audit
+from ..engines.registry import get_adapter, inference_status
 from ..inspection.detector import detect_package
 from ..inspection.license import detect_license
 from ..security.zip_safety import UnsafeArchive, safe_extract
@@ -73,79 +73,96 @@ def import_zip(
             session.commit()
             raise ImportRejected(f"archive rejected: {exc}") from exc
 
-        detection, reports = detect_package(extracted, result.files)
-        unsafe = [r for r in reports if r.verdict == "unsafe"]
-        if unsafe:
-            report = {"checkpoints": [r.summary() for r in unsafe]}
-            audit(
-                session, "model.import.rejected", filename=filename, sha256=sha256,
-                reason="unsafe pickle globals",
-                globals=[g for r in unsafe for g in r.unsafe_globals],
-            )
-            session.commit()
-            raise ImportRejected(
-                "checkpoint would execute code when loaded ("
-                + ", ".join(g for r in unsafe for g in r.unsafe_globals)
-                + "). Nothing was installed.",
-                report=report,
-            )
-
-        license_name, license_status, license_file = detect_license(extracted, result.files)
-        model_name = clean_name(name or filename)
-        version = (
-            session.scalar(select(func.max(VoiceModel.version)).where(VoiceModel.name == model_name)) or 0
-        ) + 1
-
-        model_id = uuid.uuid4().hex
-        final = settings.models_dir / model_id
-        shutil.move(str(extracted), final)
-
-        warnings = list(detection.warnings)
-        if license_status == "unknown":
-            warnings.append(
-                "License unknown. Being downloadable does not grant commercial rights; "
-                "confirm the license and record the source before using this in SCOL."
-            )
-        elif license_status == "noncommercial":
-            warnings.append(f"{license_name}: not usable in a commercial product.")
-
-        model = VoiceModel(
-            id=model_id,
-            name=model_name,
-            version=version,
-            architecture=detection.architecture,
-            kind=detection.kind,
-            completeness=detection.completeness,
-            safety="caution" if any(r.verdict == "caution" for r in reports) else "safe",
-            size_bytes=result.total_bytes,
-            sha256=sha256,
-            languages=detection.languages,
-            dependencies=detection.dependencies,
-            required_config=detection.required_config,
-            missing=detection.missing,
-            device_support=detection.device_support,
-            license=license_name,
-            license_status=license_status,
-            files=result.files,
-            report={
-                "detection": detection.to_dict(),
-                "checkpoints": [r.summary() for r in reports],
-                "skipped_files": result.skipped,
-                "license_source": license_file,
-                "warnings": warnings,
-                "original_filename": filename,
-            },
-            storage_path=str(final),
+        return install_package(
+            session, settings, extracted, result.files, result.skipped,
+            name=clean_name(name or filename), filename=filename, sha256=sha256,
         )
-        session.add(model)
-        audit(
-            session, "model.import", model_id=model_id, name=model_name, version=version,
-            architecture=detection.architecture, sha256=sha256,
-        )
-        session.commit()
-        return model
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def install_package(
+    session: Session, settings: Settings, folder: Path, files: list[dict], skipped: list[dict], *,
+    name: str, filename: str, sha256: str, source_url: str = "",
+    license_override: tuple[str, str] | None = None,
+) -> VoiceModel:
+    """Inspect an extracted folder and install it. Shared by ZIP import and the voice catalog."""
+    detection, reports = detect_package(folder, files)
+    unsafe = [r for r in reports if r.verdict == "unsafe"]
+    if unsafe:
+        bad = [g for r in unsafe for g in r.unsafe_globals]
+        audit(session, "model.import.rejected", filename=filename, sha256=sha256,
+              reason="unsafe pickle globals", globals=bad)
+        session.commit()
+        raise ImportRejected(
+            "checkpoint would execute code when loaded (" + ", ".join(bad) + "). Nothing was installed.",
+            report={"checkpoints": [r.summary() for r in unsafe]},
+        )
+
+    detected = detect_license(folder, files)
+    license_name, license_status = license_override or detected[:2]
+    license_file = "voice catalog" if license_override else detected[2]
+    version = (session.scalar(select(func.max(VoiceModel.version)).where(VoiceModel.name == name)) or 0) + 1
+
+    model_id = uuid.uuid4().hex
+    final = settings.models_dir / model_id
+    shutil.move(str(folder), final)
+
+    model = VoiceModel(
+        id=model_id, name=name, version=version,
+        architecture=detection.architecture, kind=detection.kind, completeness=detection.completeness,
+        safety="caution" if any(r.verdict == "caution" for r in reports) else "safe",
+        size_bytes=sum(f["size"] for f in files), sha256=sha256,
+        languages=detection.languages, dependencies=detection.dependencies,
+        required_config=detection.required_config, missing=detection.missing,
+        device_support=detection.device_support,
+        license=license_name, license_status=license_status, source_url=source_url,
+        files=files,
+        report={
+            "detection": detection.to_dict(),
+            "checkpoints": [r.summary() for r in reports],
+            "skipped_files": skipped,
+            "license_source": license_file,
+            "warnings": list(detection.warnings),
+            "original_filename": filename,
+        },
+        storage_path=str(final),
+    )
+    session.add(model)
+    audit(session, "model.import", model_id=model_id, name=name, version=version,
+          architecture=detection.architecture, sha256=sha256)
+    register_voice(session, model)
+    session.commit()
+    return model
+
+
+def register_voice(session: Session, model: VoiceModel) -> Voice | None:
+    """A complete TTS model with a working adapter becomes a selectable voice."""
+    if model.kind != "tts" or model.completeness != "complete" or get_adapter(model.architecture) is None:
+        return None
+    base = re.sub(r"[^a-z0-9]+", "_", model.name.lower()).strip("_")[:60] or "voice"
+    voice_id, n = base, 2
+    while session.get(Voice, voice_id):
+        voice_id, n = f"{base}_{n}", n + 1
+    details = (model.report.get("detection") or {}).get("details") or {}
+    voice = Voice(
+        id=voice_id, name=model.name, model_id=model.id, languages=model.languages,
+        description=f"{model.report['detection'].get('architecture_label', model.architecture)}"
+        + (f" · {details['quality']} quality" if details.get("quality") else ""),
+    )
+    session.add(voice)
+    model.active = True
+    audit(session, "voice.create", voice_id=voice_id, model_id=model.id)
+    return voice
+
+
+def license_warnings(model: VoiceModel) -> list[str]:
+    if model.license_status == "unknown":
+        return ["License unknown. Being downloadable does not grant commercial rights; "
+                "confirm the license and record the source before using this in SCOL."]
+    if model.license_status == "noncommercial":
+        return [f"{model.license}: not usable in a commercial product."]
+    return []
 
 
 def serialize(model: VoiceModel, full: bool = False) -> dict:
@@ -172,7 +189,9 @@ def serialize(model: VoiceModel, full: bool = False) -> dict:
         "source_url": model.source_url,
         "tags": model.tags,
         "inference": inference_status(model.architecture),
-        "warnings": model.report.get("warnings", []),
+        # licence warnings follow the current licence status; older rows stored them inline
+        "warnings": [w for w in model.report.get("warnings", []) if not w.startswith(("License unknown", model.license + ":"))]
+        + license_warnings(model),
         "created_at": model.created_at.isoformat(),
     }
     if full:

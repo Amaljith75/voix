@@ -6,31 +6,50 @@ A self-hosted, provider-independent text-to-speech platform. VOIX is the voice
 engine for SCOL: it takes text from any source (Gemini, Claude, GPT, Qwen, a
 local LLM, a form field) and will speak it with voice models you own and run.
 
-This repository is at **Phase 1 — Foundation**. Read "What works today" before
-assuming anything else.
+This repository is at **Phase 2 — first working engine**. Read "What works
+today" before assuming anything else.
 
 ## What works today
 
 | Area | Status |
 | --- | --- |
-| FastAPI backend, SQLite (PostgreSQL via `VOIX_DATABASE_URL`) | Working, tested |
-| Secure ZIP import (zip-slip, symlinks, bombs, size limits, no script extraction) | Working, tested |
-| Safe checkpoint inspection: `.pth` / `.ckpt` scanned without unpickling | Working, tested |
-| Architecture detection: Piper, RVC, GPT-SoVITS, VITS, XTTS, so-vits-svc, index-only, unknown | Working, tested |
-| TTS vs voice-conversion labelling, completeness, dependencies, license flags | Working |
-| Model library, versioning, activate / deactivate, delete, audit log | Working |
-| Characters with stable IDs and separate Malayalam / English voice slots | Working (no voices to assign yet) |
-| Studio web UI (9 sections), API playground, OpenAPI docs at `/api/docs` | Working |
-| **Speech generation** | **Not implemented.** `POST /api/v1/tts/generate` returns 501. No engine adapter is installed, and VOIX does not return placeholder audio. |
-| Streaming, batch jobs, history, caching, rate limits, quotas | Not implemented (Phases 2-6) |
+| **Speech generation with Piper** (CPU, no GPU needed) | Working. Malayalam and English voices, WAV and MP3 |
+| Starter voices: one-click download of 2 Malayalam and 2 English Piper voices | Working |
+| Text pipeline: English numbers, decimals, maths symbols, units; Malayalam symbols and units; sentence chunking for long text | Working, tested |
+| Mixed Malayalam + English: a character switches between its two voices by script | Working |
+| Jobs API (`/tts/generate` -> `/tts/jobs/{id}` -> `/audio/{id}`), cache, generation history | Working |
+| Studio: generate, waveform player, download, regenerate, per-model controls | Working |
+| Secure ZIP import, safe checkpoint inspection, architecture detection | Working, tested |
+| Characters with stable IDs and separate Malayalam / English voices | Working |
+| True audio streaming | **No.** Piper returns whole sentences. Responses are labelled `"mode": "chunked"`. A streamed endpoint is Phase 5. |
+| RVC, GPT-SoVITS, XTTS, Indic Parler-TTS, Chatterbox, Qwen3-TTS | **No adapter.** They are detected and labelled, not run. All need a GPU to be usable. |
+| Batch jobs, rate limits, quotas, per-client keys, signed audio URLs | Not implemented (Phase 5) |
 
-Verified so far: 34 automated tests; a real Piper Malayalam voice
-(`ml_IN-meera-medium`, 60 MB, from `rhasspy/piper-voices`) imported end to end
-and identified as complete Piper TTS; a checkpoint written by real
-`torch.save` scanned correctly. Detection of RVC / GPT-SoVITS / VITS / XTTS is
-tested against structural fixtures that carry the real tensor names, **not yet
-against a real community model** — send one ZIP from your Discord library to
-close that gap.
+Verified: 55 automated tests, including real synthesis with a real Piper
+Malayalam voice checked for duration, level and format. The Windows build runs
+those tests, then starts `VOIX.exe`, downloads a voice, and generates Malayalam
+speech before a release is published.
+
+**Not verified: how it sounds.** Nobody has listened to the Malayalam output
+and judged the pronunciation. That is a human check, and it decides whether
+these voices are good enough for SCOL.
+
+### Limits worth knowing
+
+- Malayalam digits are read by Piper's phonemizer (espeak-ng), not by VOIX.
+- English words inside Malayalam text are only pronounced well when a
+  *character* with both voices is used; a single Malayalam voice will mangle them.
+- The two English starter voices have American and Scottish accents. There is
+  no Indian-English Piper voice in the catalog.
+- The Malayalam starter voices have an unconfirmed licence (see
+  [docs/ENGINES.md](docs/ENGINES.md)).
+
+### Licence of the bundled engine
+
+`piper-tts` is GPL-3.0-or-later and is bundled inside `VOIX.exe`. Running VOIX
+as a server for SCOL is unaffected (the app talks to it over HTTP). Publishing
+the exe means VOIX itself must be offered under GPL-compatible terms; this
+repository does not yet declare a licence.
 
 ## Download for Windows
 
@@ -98,6 +117,12 @@ backend/app/
   engines/base.py             BaseTTSEngine adapter contract
   engines/registry.py         adapter plugin registry
   hardware.py                 CPU / RAM / GPU / FFmpeg detection
+  engines/piper_engine.py     Piper adapter (ONNX Runtime, CPU)
+  engines/manager.py          on-demand loading, LRU unload
+  text/processing.py          normalisation, language runs, sentence chunks
+  audio/processing.py         trim, join, level, WAV / MP3
+  tts/service.py              generation pipeline, job queue, cache
+  catalog.py                  starter voices
   api/routes.py               REST API v1
 frontend/src/                 React + TypeScript + Vite + Tailwind studio
 docs/                         architecture, engine recommendation, roadmap

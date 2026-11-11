@@ -87,6 +87,32 @@ class Character(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class Generation(Base):
+    """One synthesis job and its audio. Doubles as the generation history."""
+
+    __tablename__ = "generations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # queued | processing | completed | failed
+    status: Mapped[str] = mapped_column(String(20), index=True, default="queued")
+    text: Mapped[str] = mapped_column(Text)
+    language: Mapped[str] = mapped_column(String(8))
+    voice_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    character_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    model_ids: Mapped[list] = mapped_column(JSON, default=list)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_format: Mapped[str] = mapped_column(String(8), default="mp3")
+    cache_key: Mapped[str] = mapped_column(String(64), index=True)
+    audio_path: Mapped[str] = mapped_column(String(500), default="")
+    sample_rate: Mapped[int] = mapped_column(Integer, default=0)
+    audio_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    generation_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    chunks: Mapped[int] = mapped_column(Integer, default=0)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -107,6 +133,14 @@ def init_db() -> None:
     engine = create_engine(settings.database_url, connect_args=args)
     Base.metadata.create_all(engine)
     _SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+
+def new_session() -> Session:
+    """A session for background workers (caller closes it)."""
+    if _SessionLocal is None:
+        init_db()
+    assert _SessionLocal is not None
+    return _SessionLocal()
 
 
 def get_session() -> Iterator[Session]:

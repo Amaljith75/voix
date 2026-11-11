@@ -8,13 +8,15 @@ const ENDPOINTS = [
   { method: "GET", path: "/api/v1/models" },
   { method: "GET", path: "/api/v1/voices" },
   { method: "GET", path: "/api/v1/characters" },
+  { method: "GET", path: "/api/v1/catalog" },
+  { method: "GET", path: "/api/v1/history" },
   { method: "GET", path: "/api/v1/engines" },
   { method: "GET", path: "/api/v1/system/hardware" },
   { method: "GET", path: "/api/v1/system/audit" },
   {
     method: "POST",
     path: "/api/v1/tts/generate",
-    body: { text: "നമസ്കാരം കുട്ടികളേ! ഇന്ന് നമുക്ക് ശാസ്ത്രം പഠിക്കാം.", voice_id: "scol_teacher_01", language: "ml", output_format: "mp3", speed: 1.0 },
+    body: { text: "നമസ്കാരം കുട്ടികളേ! ഇന്ന് നമുക്ക് ശാസ്ത്രം പഠിക്കാം.", voice_id: "ml_in_meera_medium", language: "ml", output_format: "mp3", speed: 1.0 },
   },
 ] as const;
 

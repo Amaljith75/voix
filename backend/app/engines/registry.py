@@ -4,9 +4,8 @@ Add an engine by writing one module with a ``BaseTTSEngine`` subclass decorated
 with ``@register``, and importing it in ``app/engines/__init__.py``. Nothing
 else in the application changes.
 
-Phase 1 ships the contract and the registry only. No adapter is registered
-yet, so the API reports every model as "no inference adapter" instead of
-pretending it can speak.
+Built in: Piper. Every other architecture is reported as "no inference
+adapter" instead of pretending it can speak.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ _ADAPTERS: dict[str, type[BaseTTSEngine]] = {}
 
 #: What the detector can identify, and where each stands on the roadmap.
 KNOWN_ARCHITECTURES: dict[str, dict] = {
-    "piper": {"label": "Piper", "kind": "tts", "planned": "Phase 2 (first engine)"},
+    "piper": {"label": "Piper", "kind": "tts", "planned": "built in"},
     "vits": {"label": "VITS", "kind": "tts", "planned": "Phase 3"},
     "gpt_sovits": {"label": "GPT-SoVITS", "kind": "tts", "planned": "Phase 3"},
     "xtts": {"label": "Coqui XTTS", "kind": "tts", "planned": "Phase 3 (non-commercial license)"},

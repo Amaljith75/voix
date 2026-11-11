@@ -31,34 +31,56 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Test backend
+      - name: Test backend (with a real Piper voice)
         working-directory: backend
+        shell: pwsh
         run: |
           pip install -r requirements-dev.txt
-          python -m pytest -q
+          $voice = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/meera/medium/ml_IN-meera-medium"
+          New-Item -ItemType Directory -Force voice | Out-Null
+          Invoke-WebRequest "$voice.onnx" -OutFile voice/ml_IN-meera-medium.onnx
+          Invoke-WebRequest "$voice.onnx.json" -OutFile voice/ml_IN-meera-medium.onnx.json
+          $env:VOIX_TEST_PIPER_DIR = (Resolve-Path voice).Path
+          $env:PYTHONUTF8 = "1"
+          python -m pytest -q -rs
+          Remove-Item -Recurse -Force voice
 
       - name: Package VOIX.exe
         working-directory: backend
         run: |
           pip install pyinstaller
-          pyinstaller --noconfirm --onefile --name VOIX --console --add-data "../frontend/dist:frontend" --collect-submodules uvicorn voix_launcher.py
+          pyinstaller --noconfirm --onefile --name VOIX --console --add-data "../frontend/dist:frontend" --collect-submodules uvicorn --collect-all piper --collect-all onnxruntime voix_launcher.py
 
-      - name: Smoke test the exe
+      - name: Smoke test the exe (real Malayalam speech)
         shell: pwsh
         run: |
+          $api = "http://127.0.0.1:8765/api/v1"
           $proc = Start-Process -FilePath backend/dist/VOIX.exe -ArgumentList "--no-browser","--port","8765" -PassThru
-          $ok = $false
-          foreach ($i in 1..40) {
-            Start-Sleep -Seconds 2
-            try {
-              $health = Invoke-RestMethod http://127.0.0.1:8765/api/v1/health
-              $page = Invoke-WebRequest http://127.0.0.1:8765/ -UseBasicParsing
-              if ($health.status -eq "ok" -and $page.Content -match "VOIX") { $ok = $true; break }
-            } catch {}
+          try {
+            $up = $false
+            foreach ($i in 1..40) {
+              Start-Sleep -Seconds 2
+              try { if ((Invoke-RestMethod "$api/health").tts_ready) { $up = $true; break } } catch {}
+            }
+            if (-not $up) { throw "VOIX.exe did not start with a ready TTS engine" }
+            if ((Invoke-WebRequest http://127.0.0.1:8765/ -UseBasicParsing).Content -notmatch "VOIX") { throw "studio not served" }
+
+            Invoke-RestMethod -Method Post "$api/catalog/ml_IN-meera-medium/install" | Out-Null
+            $body = '{"text":"\u0d28\u0d2e\u0d38\u0d4d\u0d15\u0d3e\u0d30\u0d02 \u0d15\u0d41\u0d1f\u0d4d\u0d1f\u0d3f\u0d15\u0d33\u0d47! 25 + 5 = 30.","voice_id":"ml_in_meera_medium"}'
+            $job = Invoke-RestMethod -Method Post "$api/tts/generate" -ContentType "application/json" -Body $body
+            foreach ($i in 1..60) {
+              $job = Invoke-RestMethod "$api/tts/jobs/$($job.job_id)"
+              if ($job.status -in "completed","failed") { break }
+              Start-Sleep -Seconds 1
+            }
+            if ($job.status -ne "completed") { throw "generation did not complete: $($job | ConvertTo-Json)" }
+            Invoke-WebRequest "$api/audio/$($job.job_id)?format=mp3" -OutFile sample.mp3
+            $size = (Get-Item sample.mp3).Length
+            Write-Host "Generated $($job.audio_seconds) s of Malayalam audio in $($job.generation_seconds) s; MP3 is $size bytes."
+            if ($job.audio_seconds -lt 1.5 -or $size -lt 8000) { throw "audio is too short to be real speech" }
+          } finally {
+            Stop-Process -Id $proc.Id -Force
           }
-          Stop-Process -Id $proc.Id -Force
-          if (-not $ok) { throw "VOIX.exe did not start and serve the API and studio" }
-          Write-Host "VOIX.exe serves the API and the studio."
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,11 +90,11 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.${{ github.run_number }}
-          name: VOIX v0.1.${{ github.run_number }}
+          tag_name: v0.2.${{ github.run_number }}
+          name: VOIX v0.2.${{ github.run_number }}
           make_latest: true
           files: backend/dist/VOIX.exe
           body: |
             Download **VOIX.exe** and double-click it. It opens the studio in your browser.
 
-            Phase 1: model import and inspection. Speech generation is not included yet.
+            Includes the Piper engine. Add a voice in Voice Library, then generate in Voice Studio.

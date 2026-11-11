@@ -20,6 +20,13 @@ class Settings:
     max_zip_entries: int
     max_compression_ratio: int
     cors_origins: tuple[str, ...]
+    cache_enabled: bool = True
+    max_loaded_models: int = 2
+    max_text_chars: int = 20000
+
+    @property
+    def audio_dir(self) -> Path:
+        return self.data_dir / "audio"
 
     @property
     def models_dir(self) -> Path:
@@ -30,7 +37,7 @@ class Settings:
         return self.data_dir / "staging"
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.models_dir, self.staging_dir):
+        for d in (self.data_dir, self.models_dir, self.staging_dir, self.audio_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -51,4 +58,6 @@ def get_settings() -> Settings:
             for o in env("VOIX_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
             if o.strip()
         ),
+        cache_enabled=env("VOIX_CACHE", "1") not in ("0", "false", "off"),
+        max_loaded_models=int(env("VOIX_MAX_LOADED_MODELS", 2)),
     )

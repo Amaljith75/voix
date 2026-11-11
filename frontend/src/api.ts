@@ -70,7 +70,33 @@ export type Character = {
   default_speed: number;
 };
 
-export type Voice = { id: string; name: string; description: string; model_id: string; languages: string[] };
+export type Parameter = { name: string; label: string; type: string; default: number; min: number | null; max: number | null };
+export type Voice = {
+  id: string; name: string; description: string; model_id: string; languages: string[];
+  license: string; license_status: Model["license_status"]; ready: boolean; reason: string; parameters: Parameter[];
+};
+export type Job = {
+  job_id: string; status: "queued" | "processing" | "completed" | "failed"; cached: boolean; language: string;
+  voice_id: string | null; character_id: string | null; text: string; params: Record<string, number>;
+  warnings: string[]; created_at: string; audio_url?: string; audio_seconds?: number; generation_seconds?: number;
+  chunks?: number; error?: string;
+};
+export type CatalogVoice = {
+  id: string; name: string; language: string; gender: string; size_mb: number; license: string;
+  license_status: Model["license_status"]; license_note: string; source_url: string; installed: boolean;
+};
+
+/** Start a generation and resolve when it has completed or failed. */
+export async function generate(body: object, onUpdate?: (job: Job) => void): Promise<Job> {
+  let job = await api<Job>("/tts/generate", { method: "POST", body: JSON.stringify(body) });
+  onUpdate?.(job);
+  while (job.status === "queued" || job.status === "processing") {
+    await new Promise((r) => setTimeout(r, 400));
+    job = await api<Job>(`/tts/jobs/${job.job_id}`);
+    onUpdate?.(job);
+  }
+  return job;
+}
 export type Health = { status: string; version: string; models: number; tts_ready: boolean };
 export type Config = { auth_required: boolean; max_upload_mb: number; max_extracted_mb: number; max_zip_entries: number; database: string };
 

@@ -45,8 +45,8 @@ export default function Dashboard() {
               <p className="mt-2 text-2xl font-semibold">{ready ? "Ready to speak" : "No TTS engine installed"}</p>
               <p className="mt-1 max-w-md text-sm text-white/60">
                 {ready
-                  ? "An inference adapter is loaded."
-                  : "Phase 1 covers import and inspection. Speech generation arrives with the Piper adapter in Phase 2, so nothing here plays placeholder audio."}
+                  ? "Piper is built in and runs on this CPU. Add a voice in Voice Library, then generate in Voice Studio."
+                  : "The Piper runtime is not installed, so nothing can be generated."}
               </p>
             </div>
             <span className={cx("mt-1 h-2.5 w-2.5 shrink-0 rounded-full", ready ? "bg-lime" : "bg-amber-400")} />

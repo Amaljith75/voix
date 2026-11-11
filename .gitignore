@@ -8,3 +8,5 @@ venv/
 backend/data/
 .env
 .DS_Store
+backend/build/
+backend/*.spec

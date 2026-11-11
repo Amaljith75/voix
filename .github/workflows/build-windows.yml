@@ -1,0 +1,75 @@
+name: Build Windows app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build studio UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test backend
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: Package VOIX.exe
+        working-directory: backend
+        run: |
+          pip install pyinstaller
+          pyinstaller --noconfirm --onefile --name VOIX --console --add-data "../frontend/dist:frontend" --collect-submodules uvicorn voix_launcher.py
+
+      - name: Smoke test the exe
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath backend/dist/VOIX.exe -ArgumentList "--no-browser","--port","8765" -PassThru
+          $ok = $false
+          foreach ($i in 1..40) {
+            Start-Sleep -Seconds 2
+            try {
+              $health = Invoke-RestMethod http://127.0.0.1:8765/api/v1/health
+              $page = Invoke-WebRequest http://127.0.0.1:8765/ -UseBasicParsing
+              if ($health.status -eq "ok" -and $page.Content -match "VOIX") { $ok = $true; break }
+            } catch {}
+          }
+          Stop-Process -Id $proc.Id -Force
+          if (-not $ok) { throw "VOIX.exe did not start and serve the API and studio" }
+          Write-Host "VOIX.exe serves the API and the studio."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VOIX-windows
+          path: backend/dist/VOIX.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: backend/dist/VOIX.exe
+          body: |
+            Download **VOIX.exe** and double-click it. It opens the studio in your browser.
+
+            Phase 1: model import and inspection. Speech generation is not included yet.

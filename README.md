@@ -32,7 +32,22 @@ tested against structural fixtures that carry the real tensor names, **not yet
 against a real community model** — send one ZIP from your Discord library to
 close that gap.
 
-## Run it
+## Download for Windows
+
+Get **VOIX.exe** from the [latest release](https://github.com/Amaljith75/voix/releases/latest)
+and double-click it. A console window opens (that is the server) and the studio
+opens in your browser at `http://127.0.0.1:8000`. Close the window to stop.
+
+- Your models and database are kept in a `voix-data` folder next to the exe.
+- Windows SmartScreen may warn because the exe is unsigned: More info -> Run anyway.
+- To use it as a server for other devices on your Wi-Fi:
+  `set VOIX_API_KEY=choose-a-secret` then `VOIX.exe --host 0.0.0.0`, and open
+  `http://<this-PC's-IP>:8000` from the other device.
+
+The exe is built by GitHub Actions (`.github/workflows/build-windows.yml`) on
+every `v*` tag.
+
+## Run it from source
 
 Requires Python 3.11+ and Node 20+.
 

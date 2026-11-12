@@ -299,7 +299,7 @@ def upload_reference(voice_id: str, file: UploadFile = File(...), ref_text: str 
         raise HTTPException(422, f"reference clip should be 3-15 seconds long (this one is {seconds:.1f} s)")
     wav = settings.uploads_dir / f"ref-{voice_id}.wav"
     wav.write_bytes(encode_wav(samples, rate))
-    voice.settings = {**(voice.settings or {}), "ref_audio": str(wav.relative_to(settings.data_dir)),
+    voice.settings = {**(voice.settings or {}), "ref_audio": wav.relative_to(settings.data_dir).as_posix(),
                       "ref_text": ref_text.strip()[:1000]}
     audit(session, "voice.reference", voice_id=voice_id, seconds=round(seconds, 2))
     session.commit()

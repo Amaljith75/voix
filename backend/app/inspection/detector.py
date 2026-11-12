@@ -76,17 +76,17 @@ def detect_package(root: Path, files: list[dict]) -> tuple[Detection, list[Check
     """Inspect every file under ``root`` and classify the package."""
     paths = [root / f["path"] for f in files]
     reports = [
-        inspect_checkpoint(p, str(p.relative_to(root)))
+        inspect_checkpoint(p, p.relative_to(root).as_posix())
         for p in paths
         if p.suffix.lower() in CHECKPOINT_EXT
     ]
     configs = {
-        str(p.relative_to(root)): cfg
+        p.relative_to(root).as_posix(): cfg
         for p in paths
         if p.suffix.lower() in {".json", ".yaml", ".yml"}
         and isinstance(cfg := _load_config(p), dict)
     }
-    names = [str(p.relative_to(root)) for p in paths]
+    names = [p.relative_to(root).as_posix() for p in paths]
     onnx = [n for n in names if n.lower().endswith(".onnx")]
     index_files = [n for n in names if n.lower().endswith(".index")]
 

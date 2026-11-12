@@ -1,0 +1,5 @@
+# Optional Qwen3-TTS engine (English, emotion control). Heavy: several GB of
+# libraries and weights, and slow without a GPU. Install CPU PyTorch first:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+-r requirements-rvc.txt
+qwen-tts==0.1.1

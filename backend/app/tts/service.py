@@ -23,9 +23,10 @@ from ..config import Settings, get_settings
 from ..db import Character, Generation, Voice, VoiceModel, new_session
 from ..engines.manager import EngineManager
 from ..engines.registry import get_adapter, inference_status
-from ..text.processing import chunk_text, detect_language, normalize
+from ..text.processing import chunk_text, detect_language, normalize, split_directions
+from ..vc import service as vc
 
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2
 
 
 class TTSRequestError(Exception):
@@ -41,6 +42,7 @@ class Plan:
     voices: dict[str, str]  # language -> voice_id
     mixed: bool
     warnings: list[str]
+    rvc: dict | None = None  # voice changer applied after synthesis
 
 
 _manager: EngineManager | None = None
@@ -51,6 +53,8 @@ def manager() -> EngineManager:
     global _manager
     if _manager is None:
         _manager = EngineManager(max_loaded=get_settings().max_loaded_models)
+        _manager.release_hooks.append(vc.release)
+        vc.low_memory_hooks.append(_manager.unload_all)
     return _manager
 
 
@@ -84,7 +88,8 @@ def _usable_voice(session: Session, voice_id: str) -> tuple[Voice, VoiceModel]:
     return voice, model
 
 
-def make_plan(session: Session, *, text: str, voice_id: str | None, character_id: str | None, language: str) -> Plan:
+def make_plan(session: Session, *, text: str, voice_id: str | None, character_id: str | None, language: str,
+              rvc: dict | None = None) -> Plan:
     if language not in ("en", "ml", "auto"):
         raise TTSRequestError("language must be 'en', 'ml' or 'auto'")
     lang = detect_language(text) if language == "auto" else language
@@ -104,6 +109,7 @@ def make_plan(session: Session, *, text: str, voice_id: str | None, character_id
                 if code == lang:
                     warnings.append(f"Character has no {code} voice; '{other}' was used and will mispronounce it.")
         mixed = voices["ml"] != voices["en"]
+        rvc = rvc or character.rvc  # a request may override the character's voice changer
     elif voice_id:
         voices = {"ml": voice_id, "en": voice_id}
         mixed = False
@@ -116,26 +122,33 @@ def make_plan(session: Session, *, text: str, voice_id: str | None, character_id
             warnings.append(
                 f"Voice '{vid}' is a {'/'.join(voice.languages)} voice; {lang} text will be mispronounced."
             )
-    return Plan(lang, voices, mixed, warnings)
+    rvc = vc.clean_options(rvc)
+    if rvc:
+        try:
+            vc.check(session, rvc)
+        except vc.VCRequestError as exc:
+            raise TTSRequestError(exc.message, exc.status) from exc
+    return Plan(lang, voices, mixed, warnings, rvc)
 
 
 def cache_key(text: str, plan: Plan, params: dict, session: Session) -> str:
     models = sorted(session.get(Voice, v).model_id for v in set(plan.voices.values()))  # type: ignore[union-attr]
     blob = json.dumps(
         {"v": PIPELINE_VERSION, "text": text, "lang": plan.language, "voices": plan.voices, "models": models,
-         "mixed": plan.mixed, "params": params},
+         "mixed": plan.mixed, "params": params, "rvc": plan.rvc},
         sort_keys=True, ensure_ascii=False,
     )
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def submit(session: Session, settings: Settings, *, text: str, voice_id: str | None, character_id: str | None,
-           language: str, output_format: str, params: dict, use_cache: bool = True) -> tuple[Generation, bool]:
+           language: str, output_format: str, params: dict, use_cache: bool = True,
+           rvc: dict | None = None) -> tuple[Generation, bool]:
     """Create a job (or return a cached one). Returns (job, served_from_cache)."""
     text = text.strip()
     if not text:
         raise TTSRequestError("text is empty")
-    plan = make_plan(session, text=text, voice_id=voice_id, character_id=character_id, language=language)
+    plan = make_plan(session, text=text, voice_id=voice_id, character_id=character_id, language=language, rvc=rvc)
     key = cache_key(text, plan, params, session)
 
     if use_cache and settings.cache_enabled:
@@ -149,7 +162,7 @@ def submit(session: Session, settings: Settings, *, text: str, voice_id: str | N
 
     job = Generation(
         text=text, language=plan.language, voice_id=voice_id, character_id=character_id, params=params,
-        output_format=output_format, cache_key=key, warnings=plan.warnings,
+        output_format=output_format, cache_key=key, warnings=plan.warnings, kind="tts", rvc=plan.rvc,
     )
     session.add(job)
     session.commit()
@@ -158,6 +171,11 @@ def submit(session: Session, settings: Settings, *, text: str, voice_id: str | N
 
 
 def _run(job_id: str, plan: Plan) -> None:
+    _execute(job_id, lambda session, job: synthesize(session, job.text, plan, job.params))
+
+
+def _execute(job_id: str, work) -> None:
+    """Run ``work(session, job) -> (samples, rate, chunks, model_ids, warnings)`` and record the outcome."""
     settings = get_settings()
     session = new_session()
     try:
@@ -168,7 +186,7 @@ def _run(job_id: str, plan: Plan) -> None:
         session.commit()
         started = time.perf_counter()
         try:
-            samples, rate, chunk_count, model_ids = synthesize(session, job.text, plan, job.params)
+            samples, rate, chunk_count, model_ids, warnings = work(session, job)
             path = settings.audio_dir / f"{job.id}.wav"
             path.write_bytes(audio.encode_wav(samples, rate))
             job.audio_path = str(path)
@@ -176,33 +194,78 @@ def _run(job_id: str, plan: Plan) -> None:
             job.audio_seconds = round(samples.size / rate, 3)
             job.chunks = chunk_count
             job.model_ids = model_ids
+            job.warnings = list(job.warnings or []) + warnings
             job.status = "completed"
         except Exception as exc:  # recorded on the job, never swallowed
             job.status = "failed"
-            job.error = f"{type(exc).__name__}: {exc}"
+            job.error = f"{type(exc).__name__}: {getattr(exc, 'message', None) or exc}"
         job.generation_seconds = round(time.perf_counter() - started, 3)
         session.commit()
     finally:
         session.close()
 
 
-def synthesize(session: Session, text: str, plan: Plan, params: dict) -> tuple[np.ndarray, int, int, list[str]]:
+def submit_conversion(session: Session, *, upload_path: Path, filename: str, rvc: dict) -> Generation:
+    """Queue re-voicing of an uploaded audio file with an RVC model."""
+    options = vc.clean_options(rvc)
+    if not options:
+        raise TTSRequestError("choose a voice changer model")
+    try:
+        vc.check(session, options)
+    except vc.VCRequestError as exc:
+        raise TTSRequestError(exc.message, exc.status) from exc
+    job = Generation(
+        text=f"Audio file: {filename}"[:300], language="", params={}, output_format="wav", kind="conversion",
+        cache_key=hashlib.sha256(f"{filename}{time.time()}".encode()).hexdigest(), rvc=options,
+    )
+    session.add(job)
+    session.commit()
+
+    def work(session: Session, job: Generation):
+        try:
+            samples, rate = vc.decode_audio(upload_path)
+            model = session.get(VoiceModel, options["model_id"])
+            out, out_rate, warnings = vc.convert(model, samples, rate, options)
+        finally:
+            upload_path.unlink(missing_ok=True)
+        return audio.normalize_peak(out), out_rate, 1, [options["model_id"]], warnings
+
+    _pool().submit(_execute, job.id, work)
+    return job
+
+
+def synthesize(session: Session, text: str, plan: Plan, params: dict) -> tuple[np.ndarray, int, int, list[str], list[str]]:
     """Run the whole pipeline in the calling thread and return float32 mono audio."""
-    chunks = chunk_text(normalize(text, plan.language), plan.language, mixed=plan.mixed)
+    chunks = []
+    for direction, part in split_directions(text) or [("", text)]:
+        if chunks and chunks[-1][0].pause_ms == 0:  # keep a sentence pause between cue segments
+            last = chunks[-1][0]
+            chunks[-1] = (type(last)(last.text, last.language, 170), chunks[-1][1])
+        for chunk in chunk_text(normalize(part, plan.language), plan.language, mixed=plan.mixed):
+            chunks.append((chunk, direction))
     if not chunks:
         raise TTSRequestError("nothing speakable in the text")
 
     engines = {}
-    for vid in {plan.voices[c.language] for c in chunks}:
+    for vid in {plan.voices[c.language] for c, _ in chunks}:
         voice, model = _usable_voice(session, vid)
         engines[vid] = (manager().get(model.id, model.architecture, Path(model.storage_path)), voice, model)
 
+    warnings: list[str] = []
+    wants_emotion = bool(params.get("emotion")) or any(d for _, d in chunks)
     target_rate = None
     pieces: list[np.ndarray] = []
-    for chunk in chunks:
+    for chunk, direction in chunks:
         engine, voice, _ = engines[plan.voices[chunk.language]]
         allowed = {p.name for p in engine.get_supported_parameters()}
         call = {**voice.settings, **{k: v for k, v in params.items() if k in allowed}}
+        if "emotion" in allowed:
+            call["emotion"] = direction or params.get("emotion") or ""
+        elif wants_emotion and not any("emotion" in w for w in warnings):
+            warnings.append(
+                f"Voice '{voice.id}' ({engine.architecture}) has no emotion control, so emotion cues were "
+                "left out instead of being read aloud."
+            )
         result = engine.generate_speech(chunk.text, chunk.language, **call)
         target_rate = target_rate or result.sample_rate
         samples = audio.resample(np.asarray(result.samples, dtype=np.float32), result.sample_rate, target_rate)
@@ -213,8 +276,15 @@ def synthesize(session: Session, text: str, plan: Plan, params: dict) -> tuple[n
                 pieces.append(audio.silence(chunk.pause_ms, target_rate))
     if not pieces:
         raise RuntimeError("the engine produced only silence")
-    joined = audio.normalize_peak(np.concatenate(pieces))
-    return joined, int(target_rate), len(chunks), sorted({m.id for _, _, m in engines.values()})
+    joined = np.concatenate(pieces)
+    model_ids = {m.id for _, _, m in engines.values()}
+
+    if plan.rvc:  # second stage: same words, the character's timbre
+        changer = session.get(VoiceModel, plan.rvc["model_id"])
+        joined, target_rate, vc_warnings = vc.convert(changer, joined, int(target_rate), plan.rvc)
+        warnings += vc_warnings
+        model_ids.add(changer.id)
+    return audio.normalize_peak(joined), int(target_rate), len(chunks), sorted(model_ids), warnings
 
 
 def audio_bytes(job: Generation, fmt: str) -> bytes:
@@ -240,7 +310,7 @@ def voice_parameters(model: VoiceModel) -> list[dict]:
     if adapter is None:
         return []
     details = (model.report.get("detection") or {}).get("details") or {}
-    specs = adapter.parameters_for(int(details.get("num_speakers") or 1)) if hasattr(adapter, "parameters_for") else []
+    specs = adapter.parameters_for(details)
     return [
         {"name": s.name, "label": s.label, "type": s.type, "default": s.default, "min": s.minimum, "max": s.maximum}
         for s in specs

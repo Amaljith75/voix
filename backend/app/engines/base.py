@@ -17,7 +17,7 @@ class ParameterSpec:
 
     name: str
     label: str
-    type: str  # "float" | "int" | "choice"
+    type: str  # "float" | "int" | "text"
     default: float | int | str
     minimum: float | None = None
     maximum: float | None = None
@@ -42,6 +42,15 @@ class BaseTTSEngine(ABC):
     #: False; VOIX then serves them through sentence-chunked generation and
     #: labels the response as chunked, not streaming.
     supports_true_streaming: bool = False
+    #: Free RAM this engine needs to load, in MB. Engines that set it are loaded
+    #: alone: everything else is unloaded first, and loading is refused with a
+    #: clear error if the machine still does not have this much free.
+    min_free_ram_mb: int = 0
+
+    @classmethod
+    def parameters_for(cls, details: dict) -> list[ParameterSpec]:
+        """Controls for a model of this architecture, known without loading it."""
+        return []
 
     @classmethod
     @abstractmethod

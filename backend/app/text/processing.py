@@ -69,6 +69,35 @@ _ABBREVIATIONS = {"Dr.": "Doctor", "Mr.": "Mister", "Mrs.": "Missus", "Ms.": "Mi
                   "St.": "Saint", "vs.": "versus", "etc.": "et cetera", "e.g.": "for example", "i.e.": "that is"}
 
 
+_DIRECTION = re.compile(r"\[([A-Za-z][A-Za-z ,'-]{1,40})\]|\(((?:laughs?|laughing|sighs?|gasps?|whispers?|chuckles?|giggles?|crying|sobbing)[a-z ]{0,20})\)", re.I)
+
+
+def strip_stage_directions(text: str) -> tuple[str, list[str]]:
+    """Remove acting cues such as ``[laughing]`` and return them.
+
+    Engines without emotion control would otherwise read the cue aloud as words.
+    """
+    found = [m.group(1) or m.group(2) for m in _DIRECTION.finditer(text)]
+    return (re.sub(r"[ \t]{2,}", " ", _DIRECTION.sub(" ", text)).strip() if found else text), found
+
+
+def split_directions(text: str) -> list[tuple[str, str]]:
+    """Split text at acting cues: ``[sad] Oh no. [laughing] Kidding!`` ->
+    ``[("sad", "Oh no."), ("laughing", "Kidding!")]``. Text before any cue has direction ""."""
+    parts: list[tuple[str, str]] = []
+    direction, position = "", 0
+    for match in _DIRECTION.finditer(text):
+        before = text[position:match.start()].strip()
+        if before:
+            parts.append((direction, before))
+        direction = (match.group(1) or match.group(2)).strip().lower()
+        position = match.end()
+    rest = text[position:].strip()
+    if rest:
+        parts.append((direction, rest))
+    return parts
+
+
 def normalize(text: str, language: str) -> str:
     """Make text speakable. ``language`` is the dominant language: 'en' or 'ml'."""
     lang = "ml" if language == "ml" else "en"
@@ -128,6 +157,8 @@ class Chunk:
     language: str
     #: silence to insert after this chunk, in milliseconds
     pause_ms: int
+    #: acting cue in force for this chunk ("" if none), e.g. "laughing"
+    direction: str = ""
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?।…])[\"')\]]*\s+")

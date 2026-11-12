@@ -6,43 +6,41 @@ A self-hosted, provider-independent text-to-speech platform. VOIX is the voice
 engine for SCOL: it takes text from any source (Gemini, Claude, GPT, Qwen, a
 local LLM, a form field) and will speak it with voice models you own and run.
 
-This repository is at **Phase 2 — first working engine**. Read "What works
-today" before assuming anything else.
+This repository is at **Phase 3 — voice changer, emotions and a second engine**.
 
 ## What works today
 
 | Area | Status |
 | --- | --- |
-| **Speech generation with Piper** (CPU, no GPU needed) | Working. Malayalam and English voices, WAV and MP3 |
-| Starter voices: one-click download of 2 Malayalam and 2 English Piper voices | Working |
-| Text pipeline: English numbers, decimals, maths symbols, units; Malayalam symbols and units; sentence chunking for long text | Working, tested |
-| Mixed Malayalam + English: a character switches between its two voices by script | Working |
-| Jobs API (`/tts/generate` -> `/tts/jobs/{id}` -> `/audio/{id}`), cache, generation history | Working |
-| Studio: generate, waveform player, download, regenerate, per-model controls | Working |
-| Secure ZIP import, safe checkpoint inspection, architecture detection | Working, tested |
-| Characters with stable IDs and separate Malayalam / English voices | Working |
-| True audio streaming | **No.** Piper returns whole sentences. Responses are labelled `"mode": "chunked"`. A streamed endpoint is Phase 5. |
-| RVC, GPT-SoVITS, XTTS, Indic Parler-TTS, Chatterbox, Qwen3-TTS | **No adapter.** They are detected and labelled, not run. All need a GPU to be usable. |
-| Batch jobs, rate limits, quotas, per-client keys, signed audio URLs | Not implemented (Phase 5) |
+| **Piper** text-to-speech (CPU) | Working. Malayalam and English, WAV and MP3 |
+| **Voice changer (RVC)**: imported `.pth` + `.index` character models applied after any TTS voice | Working. Real conversion tested |
+| **Audio-file voice changer**: upload MP3 / WAV / FLAC / OGG, get it back in a character's voice | Working |
+| **Characters** with a Malayalam voice, an English voice and an optional voice changer | Working |
+| **Qwen3-TTS** (optional download): 9 English voices with emotion control | Working, slow on CPU |
+| **Emotion cues**: `emotion` field or `[laughing]`, `[sad]` in the text | Acted by Qwen3-TTS; skipped (not read aloud) by Piper |
+| Text pipeline, jobs API, cache, history, secure import, architecture detection | Working, tested |
+| Malayalam with emotion | **No.** No engine that runs here speaks Malayalam with emotion control |
+| True audio streaming | **No.** Responses are `"mode": "chunked"` |
+| GPT-SoVITS, XTTS, Indic Parler-TTS, Chatterbox | Detected, not run |
 
-Verified: 55 automated tests, including real synthesis with a real Piper
-Malayalam voice checked for duration, level and format. The Windows build runs
-those tests, then starts `VOIX.exe`, downloads a voice, and generates Malayalam
-speech before a release is published.
+Verified: 66 automated tests, including real Piper synthesis and real RVC
+conversion. The Windows build reruns them on Windows, then starts the packaged
+app and generates speech through the voice changer and Qwen3-TTS before
+publishing. **Not verified: how it sounds.** Pronunciation and voice quality
+need a human listening check.
 
-**Not verified: how it sounds.** Nobody has listened to the Malayalam output
-and judged the pronunciation. That is a human check, and it decides whether
-these voices are good enough for SCOL.
+### Speed on a 2-core CPU without a GPU
 
-### Limits worth knowing
+| Pipeline | 5 s of speech takes |
+| --- | --- |
+| Piper | about 1 s |
+| Piper + voice changer | about 6-10 s |
+| Qwen3-TTS | about 25-30 s (plus loading the first time) |
 
-- Malayalam digits are read by Piper's phonemizer (espeak-ng), not by VOIX.
-- English words inside Malayalam text are only pronounced well when a
-  *character* with both voices is used; a single Malayalam voice will mangle them.
-- The two English starter voices have American and Scottish accents. There is
-  no Indian-English Piper voice in the catalog.
-- The Malayalam starter voices have an unconfirmed licence (see
-  [docs/ENGINES.md](docs/ENGINES.md)).
+Qwen3-TTS needs about 4.5 GB of free RAM. VOIX unloads the voice changer
+before loading it, and refuses with a clear message if memory is still short.
+
+See [docs/API.md](docs/API.md) for calling VOIX from the SCOL app.
 
 ### Licence of the bundled engine
 
@@ -53,11 +51,17 @@ repository does not yet declare a licence.
 
 ## Download for Windows
 
-Get **VOIX.exe** from the [latest release](https://github.com/Amaljith75/voix/releases/latest)
-and double-click it. A console window opens (that is the server) and the studio
+From the [latest release](https://github.com/Amaljith75/voix/releases/latest):
+
+- **VOIX-full-windows.zip** - everything (Piper, voice changer, Qwen3-TTS). Unzip, open the
+  `VOIX` folder, double-click `VOIX.exe`.
+- **VOIX.exe** - small single file, Piper voices only.
+
+The voice changer files (355 MB) and Qwen3-TTS (2.4 GB) are downloaded from
+Settings -> Optional downloads the first time you need them. A console window opens (that is the server) and the studio
 opens in your browser at `http://127.0.0.1:8000`. Close the window to stop.
 
-- Your models and database are kept in a `voix-data` folder next to the exe.
+- Your models and database are kept in a `voix-data` folder next to the exe. To move to a new version, copy that folder next to the new `VOIX.exe`.
 - Windows SmartScreen may warn because the exe is unsigned: More info -> Run anyway.
 - To use it as a server for other devices on your Wi-Fi:
   `set VOIX_API_KEY=choose-a-secret` then `VOIX.exe --host 0.0.0.0`, and open
@@ -84,6 +88,8 @@ npm run dev
 ```
 
 Tests: `cd backend && pytest`.
+
+Optional engines from source: `pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu`, then `pip install -r requirements-rvc.txt` (voice changer) or `-r requirements-qwen.txt` (both).
 
 ### Configuration
 
@@ -118,7 +124,11 @@ backend/app/
   engines/registry.py         adapter plugin registry
   hardware.py                 CPU / RAM / GPU / FFmpeg detection
   engines/piper_engine.py     Piper adapter (ONNX Runtime, CPU)
-  engines/manager.py          on-demand loading, LRU unload
+  engines/qwen_engine.py      Qwen3-TTS adapter (optional)
+  engines/rvc/                RVC voice changer (vendor/ is MIT code from RVC-Project)
+  engines/manager.py          on-demand loading, LRU unload, memory guard
+  vc/service.py               voice changer service, audio upload decoding
+  runtime_assets.py           optional downloads (RVC runtime, Qwen3-TTS)
   text/processing.py          normalisation, language runs, sentence chunks
   audio/processing.py         trim, join, level, WAV / MP3
   tts/service.py              generation pipeline, job queue, cache

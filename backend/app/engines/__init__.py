@@ -1,2 +1,2 @@
 """Engine adapters. Importing this package registers every built-in adapter."""
-from . import piper_engine  # noqa: F401
+from . import piper_engine, qwen_engine  # noqa: F401

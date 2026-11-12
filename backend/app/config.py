@@ -7,6 +7,15 @@ from functools import lru_cache
 from pathlib import Path
 
 GB = 1024**3
+
+
+def missing_feature_hint(pip_hint: str) -> str:
+    """How to get an optional engine: a pip command from source, a different download for the exe."""
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return "Not included in this download. Get VOIX-full from the GitHub releases page."
+    return pip_hint
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -25,6 +34,10 @@ class Settings:
     max_text_chars: int = 20000
 
     @property
+    def runtime_dir(self) -> Path:
+        return self.data_dir / "runtime"
+
+    @property
     def audio_dir(self) -> Path:
         return self.data_dir / "audio"
 
@@ -37,7 +50,7 @@ class Settings:
         return self.data_dir / "staging"
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.models_dir, self.staging_dir, self.audio_dir):
+        for d in (self.data_dir, self.models_dir, self.staging_dir, self.audio_dir, self.runtime_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 

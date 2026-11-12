@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterator
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -84,6 +84,8 @@ class Character(Base):
     voice_en: Mapped[str | None] = mapped_column(String(80), nullable=True)
     default_speed: Mapped[float] = mapped_column(Float, default=1.0)
     presets: Mapped[dict] = mapped_column(JSON, default=dict)
+    #: optional voice changer applied after TTS: {"model_id", "pitch", "index_rate"}
+    rvc: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -110,6 +112,10 @@ class Generation(Base):
     chunks: Mapped[int] = mapped_column(Integer, default=0)
     warnings: Mapped[list] = mapped_column(JSON, default=list)
     error: Mapped[str] = mapped_column(Text, default="")
+    #: "tts" or "conversion" (an uploaded audio file re-voiced with RVC)
+    kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: voice changer settings used for this job, if any
+    rvc: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
@@ -132,7 +138,20 @@ def init_db() -> None:
     args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
     engine = create_engine(settings.database_url, connect_args=args)
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     _SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+
+def _add_missing_columns(engine) -> None:
+    """Additive upgrade for databases created by an older VOIX: new nullable columns only."""
+    existing = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in existing.get_columns(table.name)}
+            for column in table.columns:
+                if column.name not in have and column.nullable:
+                    kind = column.type.compile(dialect=engine.dialect)
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {column.name} {kind}'))
 
 
 def new_session() -> Session:

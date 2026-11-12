@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
-import type { Config, Engine, Hardware } from "../api";
+import type { Config, Engine, Hardware, RuntimeBundle } from "../api";
 import { api, getApiKey, setApiKey } from "../api";
+import { BundleInstall } from "../components/VoiceChanger";
 import { Badge, Button, Card, CardTitle, LoadState, Notice, PageHeader, useLoad } from "../components/ui";
 
 function Row({ label, value }: { label: string; value: ReactNode }) {
@@ -17,6 +18,7 @@ export default function Settings() {
   const hw = useLoad(() => api<Hardware>("/system/hardware"));
   const config = useLoad(() => api<Config>("/system/config"));
   const engines = useLoad(() => api<Engine[]>("/engines"));
+  const bundles = useLoad(() => api<RuntimeBundle[]>("/runtime"));
   const [key, setKey] = useState(getApiKey);
   const [saved, setSaved] = useState(false);
 
@@ -64,6 +66,22 @@ export default function Settings() {
               <div className="mt-3 space-y-2">{hw.data.warnings.map((w) => <Notice key={w}>{w}</Notice>)}</div>
             </>
           )}
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardTitle>Optional downloads</CardTitle>
+          <LoadState error={bundles.error} loading={!bundles.data && !bundles.error} />
+          <ul className="divide-y divide-line">
+            {bundles.data?.map((b) => (
+              <li key={b.id} className="grid gap-3 py-4 md:grid-cols-[1fr_300px] md:items-center">
+                <div>
+                  <p className="text-sm font-semibold">{b.label} {b.installed && <Badge tone="lime">Installed</Badge>}</p>
+                  <p className="mt-1 text-[13px] text-muted">{b.note}</p>
+                </div>
+                <BundleInstall id={b.id} compact onReady={() => { bundles.reload(); engines.reload(); }} />
+              </li>
+            ))}
+          </ul>
         </Card>
 
         <Card className="xl:col-span-2">

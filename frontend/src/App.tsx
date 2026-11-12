@@ -1,5 +1,5 @@
 import {
-  AudioLines, History as HistoryIcon, LayoutGrid, Library, Mic2, PackagePlus, Settings as SettingsIcon, TerminalSquare, Users,
+  AudioLines, History as HistoryIcon, Repeat2, LayoutGrid, Library, Mic2, PackagePlus, Settings as SettingsIcon, TerminalSquare, Users,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Health } from "./api";
@@ -12,11 +12,13 @@ import ModelLibrary from "./pages/ModelLibrary";
 import ModelManager from "./pages/ModelManager";
 import Settings from "./pages/Settings";
 import { HistoryPage as History, VoiceLibraryPage as VoiceLibrary } from "./pages/Misc";
+import VoiceChanger from "./pages/VoiceChanger";
 import VoiceStudio from "./pages/VoiceStudio";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, page: Dashboard },
   { id: "studio", label: "Voice Studio", icon: AudioLines, page: VoiceStudio },
+  { id: "changer", label: "Voice Changer", icon: Repeat2, page: VoiceChanger },
   { id: "voices", label: "Voice Library", icon: Mic2, page: VoiceLibrary },
   { id: "models", label: "Model Library", icon: Library, page: ModelLibrary },
   { id: "manager", label: "Model Manager", icon: PackagePlus, page: ModelManager },

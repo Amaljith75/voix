@@ -1,8 +1,9 @@
 import { Plus, Trash2, Users } from "lucide-react";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import type { Character, Voice } from "../api";
+import type { Character, Model, RvcOptions, Voice } from "../api";
 import { api } from "../api";
+import { VoiceChangerControls } from "../components/VoiceChanger";
 import { Badge, Button, Card, CardTitle, Empty, LoadState, Notice, PageHeader, useLoad } from "../components/ui";
 
 const field = "h-11 w-full rounded-2xl bg-soft px-4 text-sm outline-none placeholder:text-muted focus:ring-2 focus:ring-ink/10";
@@ -15,6 +16,9 @@ export default function Characters() {
   const [speed, setSpeed] = useState(1);
   const [voiceMl, setVoiceMl] = useState("");
   const [voiceEn, setVoiceEn] = useState("");
+  const [rvc, setRvc] = useState<RvcOptions | null>(null);
+  const models = useLoad(() => api<Model[]>("/models"));
+  const modelName = (id: string) => models.data?.find((m) => m.id === id)?.name ?? "voice changer";
   const [error, setError] = useState<string | null>(null);
 
   async function create(e: FormEvent) {
@@ -23,11 +27,12 @@ export default function Characters() {
     try {
       await api("/characters", {
         method: "POST",
-        body: JSON.stringify({ name, description, default_speed: speed, voice_ml: voiceMl || null, voice_en: voiceEn || null }),
+        body: JSON.stringify({ name, description, default_speed: speed, voice_ml: voiceMl || null, voice_en: voiceEn || null, rvc }),
       });
       setName("");
       setDescription("");
       setSpeed(1);
+      setRvc(null);
       characters.reload();
     } catch (err) {
       setError((err as Error).message);
@@ -82,6 +87,7 @@ export default function Characters() {
                   <Badge tone={c.voice_ml ? "lime" : "neutral"}>Malayalam · {c.voice_ml ?? "no voice"}</Badge>
                   <Badge tone={c.voice_en ? "lime" : "neutral"}>English · {c.voice_en ?? "no voice"}</Badge>
                   <Badge>{c.default_speed.toFixed(2)}× speed</Badge>
+                  {c.rvc && <Badge tone="sky">Voice changer · {modelName(c.rvc.model_id)}{c.rvc.pitch ? ` · ${c.rvc.pitch > 0 ? "+" : ""}${c.rvc.pitch}` : ""}</Badge>}
                 </div>
               </li>
             ))}
@@ -99,6 +105,10 @@ export default function Characters() {
               Default speed · {speed.toFixed(2)}×
               <input type="range" min={0.5} max={2} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="mt-2 w-full accent-ink" />
             </label>
+            <div className="rounded-3xl bg-soft/60 p-4 ring-1 ring-line">
+              <p className="mb-3 text-xs font-semibold text-muted">Voice changer (optional)</p>
+              <VoiceChangerControls value={rvc} onChange={setRvc} />
+            </div>
             {error && <Notice tone="red">{error}</Notice>}
             <Button type="submit" className="w-full" disabled={!name.trim()}><Plus size={15} /> Create character</Button>
           </form>

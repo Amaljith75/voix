@@ -99,9 +99,9 @@ export function HistoryPage() {
   async function regenerate(job: Job) {
     setError(null);
     try {
-      const { speed = 1, ...rest } = job.params;
+      const { speed = 1, emotion = null, ...rest } = job.params;
       const result = await generate({
-        text: job.text, language: job.language, speed, params: rest, use_cache: false, output_format: "wav",
+        text: job.text, language: job.language, speed, emotion, params: rest, rvc: job.rvc, use_cache: false, output_format: "wav",
         ...(job.character_id ? { character_id: job.character_id } : { voice_id: job.voice_id }),
       });
       if (result.status === "failed") setError(result.error ?? "Generation failed.");
@@ -140,12 +140,13 @@ export function HistoryPage() {
                 <button className="min-w-0 flex-1 basis-64 text-left" onClick={() => setOpen(open === j.job_id ? null : j.job_id)} disabled={j.status !== "completed"}>
                   <span className="line-clamp-2 text-sm font-medium">{j.text}</span>
                   <span className="mt-1 block text-xs text-muted">
-                    {new Date(j.created_at).toLocaleString()} · {j.character_id ?? j.voice_id} · {languageName(j.language)}
+                    {new Date(j.created_at).toLocaleString()} · {j.kind === "conversion" ? "voice changer" : `${j.character_id ?? j.voice_id} · ${languageName(j.language)}`}
+                    {j.kind !== "conversion" && j.rvc ? " · voice changer" : ""}
                     {j.status === "completed" && ` · ${j.audio_seconds?.toFixed(1)} s`}
                   </span>
                 </button>
                 <Badge tone={j.status === "completed" ? "lime" : j.status === "failed" ? "red" : "amber"}>{j.status}</Badge>
-                <button aria-label="Regenerate" onClick={() => regenerate(j)} className="grid h-9 w-9 place-items-center rounded-full bg-soft hover:bg-line"><RotateCcw size={15} /></button>
+                {j.kind !== "conversion" && <button aria-label="Regenerate" onClick={() => regenerate(j)} className="grid h-9 w-9 place-items-center rounded-full bg-soft hover:bg-line"><RotateCcw size={15} /></button>}
                 <button aria-label="Delete" onClick={() => remove(j)} className="grid h-9 w-9 place-items-center rounded-full bg-red-50 text-red-700 hover:bg-red-100"><Trash2 size={15} /></button>
               </div>
               {j.status === "failed" && <p className="mt-2 text-xs text-red-700">{j.error}</p>}

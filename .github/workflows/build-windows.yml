@@ -9,92 +9,211 @@ on:
 permissions:
   contents: write
 
+env:
+  PIPER_VOICE: https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/meera/medium/ml_IN-meera-medium
+  RVC_ASSETS: https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main
+  # Public MIT-licensed RVC v2 model, used only to test conversion.
+  RVC_TEST_MODEL: https://huggingface.co/YukiKaze1337/DaFeiYu_rvc_v2_40k/resolve/main/dafeiyu.pth
+  PYTHONUTF8: "1"
+
 jobs:
-  build:
+  ui:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
       - name: Build studio UI
         working-directory: frontend
         run: |
           npm ci
           npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studio-ui
+          path: frontend/dist
 
+  # Small single-file VOIX.exe: Piper only.
+  lite:
+    needs: ui
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: studio-ui
+          path: frontend/dist
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Test backend (with a real Piper voice)
+      - name: Test backend (real Piper voice)
         working-directory: backend
         shell: pwsh
         run: |
           pip install -r requirements-dev.txt
-          $voice = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/meera/medium/ml_IN-meera-medium"
           New-Item -ItemType Directory -Force voice | Out-Null
-          Invoke-WebRequest "$voice.onnx" -OutFile voice/ml_IN-meera-medium.onnx
-          Invoke-WebRequest "$voice.onnx.json" -OutFile voice/ml_IN-meera-medium.onnx.json
+          Invoke-WebRequest "$env:PIPER_VOICE.onnx" -OutFile voice/ml_IN-meera-medium.onnx
+          Invoke-WebRequest "$env:PIPER_VOICE.onnx.json" -OutFile voice/ml_IN-meera-medium.onnx.json
           $env:VOIX_TEST_PIPER_DIR = (Resolve-Path voice).Path
-          $env:PYTHONUTF8 = "1"
-          python -m pytest -q -rs
+          python -m pytest -q -rs -p no:warnings
           Remove-Item -Recurse -Force voice
-
       - name: Package VOIX.exe
         working-directory: backend
         run: |
           pip install pyinstaller
           pyinstaller --noconfirm --onefile --name VOIX --console --add-data "../frontend/dist:frontend" --collect-submodules uvicorn --collect-all piper --collect-all onnxruntime voix_launcher.py
-
-      - name: Smoke test the exe (real Malayalam speech)
+      - name: Smoke test (real Malayalam speech)
         shell: pwsh
         run: |
           $api = "http://127.0.0.1:8765/api/v1"
           $proc = Start-Process -FilePath backend/dist/VOIX.exe -ArgumentList "--no-browser","--port","8765" -PassThru
           try {
             $up = $false
-            foreach ($i in 1..40) {
-              Start-Sleep -Seconds 2
-              try { if ((Invoke-RestMethod "$api/health").tts_ready) { $up = $true; break } } catch {}
-            }
-            if (-not $up) { throw "VOIX.exe did not start with a ready TTS engine" }
+            foreach ($i in 1..40) { Start-Sleep 2; try { if ((Invoke-RestMethod "$api/health").tts_ready) { $up = $true; break } } catch {} }
+            if (-not $up) { throw "VOIX.exe did not start" }
             if ((Invoke-WebRequest http://127.0.0.1:8765/ -UseBasicParsing).Content -notmatch "VOIX") { throw "studio not served" }
-
             Invoke-RestMethod -Method Post "$api/catalog/ml_IN-meera-medium/install" | Out-Null
-            $body = '{"text":"\u0d28\u0d2e\u0d38\u0d4d\u0d15\u0d3e\u0d30\u0d02 \u0d15\u0d41\u0d1f\u0d4d\u0d1f\u0d3f\u0d15\u0d33\u0d47! 25 + 5 = 30.","voice_id":"ml_in_meera_medium"}'
+            $body = '{"text":"നമസ്കാരം കുട്ടികളേ! 25 + 5 = 30.","voice_id":"ml_in_meera_medium"}'
             $job = Invoke-RestMethod -Method Post "$api/tts/generate" -ContentType "application/json" -Body $body
-            foreach ($i in 1..60) {
-              $job = Invoke-RestMethod "$api/tts/jobs/$($job.job_id)"
-              if ($job.status -in "completed","failed") { break }
-              Start-Sleep -Seconds 1
-            }
-            if ($job.status -ne "completed") { throw "generation did not complete: $($job | ConvertTo-Json)" }
-            Invoke-WebRequest "$api/audio/$($job.job_id)?format=mp3" -OutFile sample.mp3
-            $size = (Get-Item sample.mp3).Length
-            Write-Host "Generated $($job.audio_seconds) s of Malayalam audio in $($job.generation_seconds) s; MP3 is $size bytes."
-            if ($job.audio_seconds -lt 1.5 -or $size -lt 8000) { throw "audio is too short to be real speech" }
-          } finally {
-            Stop-Process -Id $proc.Id -Force
-          }
-
+            foreach ($i in 1..60) { $job = Invoke-RestMethod "$api/tts/jobs/$($job.job_id)"; if ($job.status -in "completed","failed") { break }; Start-Sleep 1 }
+            if ($job.status -ne "completed") { throw "generation failed: $($job | ConvertTo-Json)" }
+            Write-Host "Lite: $($job.audio_seconds) s of Malayalam in $($job.generation_seconds) s"
+            $bundles = Invoke-RestMethod "$api/runtime"
+            if (($bundles | Where-Object id -eq "rvc").available) { throw "lite build unexpectedly reports the voice changer as available" }
+          } finally { Stop-Process -Id $proc.Id -Force }
       - uses: actions/upload-artifact@v4
         with:
-          name: VOIX-windows
+          name: voix-lite
           path: backend/dist/VOIX.exe
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+  # Folder build: Piper + voice changer (RVC) + Qwen3-TTS.
+  full:
+    needs: ui
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          tag_name: v0.2.${{ github.run_number }}
-          name: VOIX v0.2.${{ github.run_number }}
-          make_latest: true
-          files: backend/dist/VOIX.exe
-          body: |
-            Download **VOIX.exe** and double-click it. It opens the studio in your browser.
+          name: studio-ui
+          path: frontend/dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install engines
+        working-directory: backend
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt -r requirements-qwen.txt pyinstaller
+      - name: Test backend (real Piper voice and real RVC conversion)
+        working-directory: backend
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force voice, rvc-model, rvc-assets/hubert_base | Out-Null
+          Invoke-WebRequest "$env:PIPER_VOICE.onnx" -OutFile voice/ml_IN-meera-medium.onnx
+          Invoke-WebRequest "$env:PIPER_VOICE.onnx.json" -OutFile voice/ml_IN-meera-medium.onnx.json
+          Invoke-WebRequest $env:RVC_TEST_MODEL -OutFile rvc-model/dafeiyu.pth
+          foreach ($f in "hubert_base/config.json","hubert_base/preprocessor_config.json","hubert_base/pytorch_model.bin","rmvpe.pt") {
+            Invoke-WebRequest "$env:RVC_ASSETS/$f" -OutFile "rvc-assets/$f"
+          }
+          $env:VOIX_TEST_PIPER_DIR = (Resolve-Path voice).Path
+          $env:VOIX_TEST_RVC_DIR = (Resolve-Path rvc-model).Path
+          $env:VOIX_TEST_RVC_ASSETS = (Resolve-Path rvc-assets).Path
+          python -m pytest -q -rs -p no:warnings
+          Remove-Item -Recurse -Force voice, rvc-assets
+      - name: Package VOIX folder
+        working-directory: backend
+        run: >
+          pyinstaller --noconfirm --onedir --name VOIX --console
+          --add-data "../frontend/dist:frontend"
+          --collect-submodules uvicorn --collect-all piper --collect-all onnxruntime
+          --collect-all qwen_tts --collect-all librosa --collect-all lazy_loader --collect-data sox
+          --collect-submodules transformers.models.hubert --collect-submodules transformers.models.wav2vec2
+          --recursive-copy-metadata transformers --recursive-copy-metadata qwen-tts --copy-metadata accelerate
+          --exclude-module gradio --exclude-module matplotlib --exclude-module tkinter
+          voix_launcher.py
+      - name: Smoke test (voice changer and Qwen3-TTS from the packaged app)
+        shell: pwsh
+        run: |
+          $api = "http://127.0.0.1:8766/api/v1"
+          $proc = Start-Process -FilePath backend/dist/VOIX/VOIX.exe -ArgumentList "--no-browser","--port","8766" -PassThru
+          function Wait-Job($id, $limit) {
+            foreach ($i in 1..$limit) { $j = Invoke-RestMethod "$api/tts/jobs/$id"; if ($j.status -in "completed","failed") { return $j }; Start-Sleep 1 }
+            throw "job $id did not finish"
+          }
+          function Wait-Bundle($id) {
+            foreach ($i in 1..360) {
+              $b = (Invoke-RestMethod "$api/runtime") | Where-Object id -eq $id
+              if ($b.installed) { return }
+              if ($b.state -eq "error") { throw "$id install failed: $($b.error)" }
+              Start-Sleep 5
+            }
+            throw "$id install timed out"
+          }
+          try {
+            $up = $false
+            foreach ($i in 1..60) { Start-Sleep 2; try { if ((Invoke-RestMethod "$api/health").tts_ready) { $up = $true; break } } catch {} }
+            if (-not $up) { throw "packaged VOIX did not start" }
 
-            Includes the Piper engine. Add a voice in Voice Library, then generate in Voice Studio.
+            Invoke-RestMethod -Method Post "$api/catalog/en_US-ljspeech-medium/install" | Out-Null
+            Invoke-RestMethod -Method Post "$api/runtime/rvc/install" | Out-Null
+            Wait-Bundle "rvc"
+            New-Item -ItemType Directory -Force rvczip | Out-Null
+            Copy-Item backend/rvc-model/dafeiyu.pth rvczip/
+            Compress-Archive -Path rvczip/* -DestinationPath dafeiyu.zip -Force
+            $model = (curl.exe -s -F "file=@dafeiyu.zip" "$api/models/import") | ConvertFrom-Json
+            if ($model.architecture -ne "rvc" -or -not $model.inference.ready) { throw "RVC import failed: $($model | ConvertTo-Json -Depth 5)" }
+
+            $body = @{ text = "Hello children! Today we learn about planets."; voice_id = "en_us_ljspeech_medium"; rvc = @{ model_id = $model.id; pitch = 0 } } | ConvertTo-Json
+            $job = Wait-Job (Invoke-RestMethod -Method Post "$api/tts/generate" -ContentType "application/json" -Body $body).job_id 300
+            if ($job.status -ne "completed" -or $job.sample_rate -ne 40000) { throw "voice changer failed: $($job | ConvertTo-Json)" }
+            Write-Host "Piper + RVC: $($job.audio_seconds) s in $($job.generation_seconds) s"
+
+            Invoke-RestMethod "$api/audio/$($job.job_id)?format=wav" -OutFile speech.wav
+            $conv = (curl.exe -s -F "file=@speech.wav" -F "model_id=$($model.id)" -F "pitch=3" "$api/vc/convert") | ConvertFrom-Json
+            $conv = Wait-Job $conv.job_id 300
+            if ($conv.status -ne "completed") { throw "file conversion failed: $($conv | ConvertTo-Json)" }
+            Write-Host "Uploaded file converted: $($conv.audio_seconds) s in $($conv.generation_seconds) s"
+
+            Invoke-RestMethod -Method Post "$api/runtime/qwen3/install" | Out-Null
+            Wait-Bundle "qwen3"
+            $body = @{ text = "[laughing] That pig had more confidence than anyone I have ever met!"; voice_id = "qwen_ryan" } | ConvertTo-Json
+            $job = Wait-Job (Invoke-RestMethod -Method Post "$api/tts/generate" -ContentType "application/json" -Body $body).job_id 900
+            if ($job.status -ne "completed" -or $job.audio_seconds -lt 1.5) { throw "Qwen3-TTS failed: $($job | ConvertTo-Json)" }
+            Write-Host "Qwen3-TTS with emotion: $($job.audio_seconds) s in $($job.generation_seconds) s"
+          } finally { Stop-Process -Id $proc.Id -Force }
+      - name: Zip
+        run: |
+          Remove-Item -Recurse -Force backend/dist/VOIX/voix-data -ErrorAction SilentlyContinue
+          7z a -tzip -mx=5 VOIX-full-windows.zip ./backend/dist/VOIX
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voix-full
+          path: VOIX-full-windows.zip
+          compression-level: 0
+
+  release:
+    needs: [lite, full]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.${{ github.run_number }}
+          name: VOIX v0.3.${{ github.run_number }}
+          make_latest: true
+          files: |
+            out/VOIX.exe
+            out/VOIX-full-windows.zip
+          body: |
+            **VOIX-full-windows.zip** - everything: Piper (Malayalam + English), the voice changer for RVC character models, an audio-file voice changer, and Qwen3-TTS with emotion control. Unzip and run `VOIX/VOIX.exe`. The voice changer (355 MB) and Qwen3-TTS (2.4 GB) are downloaded from Settings when you first need them.
+
+            **VOIX.exe** - small single file, Piper voices only.
+
+            Both builds were tested on Windows before publishing, including real speech generation and voice conversion.

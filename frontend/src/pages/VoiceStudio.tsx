@@ -1,8 +1,9 @@
 import { Eraser, Mic2, Play, RotateCcw, Sparkles, Users } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Character, Job, Voice } from "../api";
+import type { Character, Job, RvcOptions, Voice } from "../api";
 import { api, generate, languageName } from "../api";
 import { Player } from "../components/Player";
+import { VoiceChangerControls } from "../components/VoiceChanger";
 import { Badge, Button, Card, CardTitle, Empty, Notice, PageHeader, Waveform, cx, useLoad } from "../components/ui";
 
 const SAMPLES = {
@@ -10,12 +11,15 @@ const SAMPLES = {
   ml: "നമസ്കാരം കുട്ടികളേ! ഇന്ന് നമുക്ക് ശാസ്ത്രം പഠിക്കാം.",
 };
 type Target = { kind: "voice" | "character"; id: string };
+const EMOTIONS = ["happy", "excited", "calm", "sad", "angry", "surprised", "whispering", "laughing"];
 
 export default function VoiceStudio() {
   const [text, setText] = useState("");
   const [target, setTarget] = useState<Target | null>(null);
   const [language, setLanguage] = useState("auto");
   const [params, setParams] = useState<Record<string, number>>({});
+  const [emotion, setEmotion] = useState("");
+  const [rvc, setRvc] = useState<RvcOptions | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,13 +29,16 @@ export default function VoiceStudio() {
   const usableCharacters = (characters.data ?? []).filter((c) => c.voice_ml || c.voice_en);
   const voice = target?.kind === "voice" ? voices.data?.find((v) => v.id === target.id) : undefined;
   const character = target?.kind === "character" ? usableCharacters.find((c) => c.id === target.id) : undefined;
-  const controls = voice?.parameters ?? (character ? [{ name: "speed", label: "Speed", type: "float", default: character.default_speed, min: 0.5, max: 2 }] : []);
+  const all = voice?.parameters ?? (character ? [{ name: "speed", label: "Speed", type: "float", default: character.default_speed, min: 0.5, max: 2 }] : []);
+  const controls = all.filter((p) => p.type !== "text");
+  const hasEmotion = all.some((p) => p.name === "emotion");
 
   useEffect(() => {
     if (!target && voices.data?.length) setTarget({ kind: "voice", id: voices.data[0].id });
   }, [voices.data, target]);
   useEffect(() => {
-    setParams(Object.fromEntries(controls.map((p) => [p.name, p.default])));
+    setParams(Object.fromEntries(controls.map((p) => [p.name, Number(p.default)])));
+    setRvc(character?.rvc ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.kind, target?.id]);
 
@@ -45,7 +52,10 @@ export default function VoiceStudio() {
     const { speed = 1, ...rest } = params;
     try {
       const result = await generate(
-        { text, language, [target.kind === "voice" ? "voice_id" : "character_id"]: target.id, speed, params: rest, use_cache: useCache, output_format: "wav" },
+        {
+          text, language, [target.kind === "voice" ? "voice_id" : "character_id"]: target.id, speed, params: rest,
+          use_cache: useCache, output_format: "wav", rvc, emotion: hasEmotion && emotion ? emotion : null,
+        },
         setJob,
       );
       if (result.status === "failed") setError(result.error ?? "Generation failed.");
@@ -139,7 +149,7 @@ export default function VoiceStudio() {
                   <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-ink"><Users size={16} /></span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold">{c.name}</span>
-                    <span className="block truncate text-xs opacity-60">Switches voice by language</span>
+                    <span className="block truncate text-xs opacity-60">{c.rvc ? "Switches voice by language · voice changer" : "Switches voice by language"}</span>
                   </span>
                 </button>
               ))}
@@ -156,22 +166,39 @@ export default function VoiceStudio() {
                 <option value="en">English</option>
               </select>
             </label>
-            {controls.length === 0 && <p className="mt-4 text-[13px] text-muted">Choose a voice to see the controls its engine supports.</p>}
+            {all.length === 0 && <p className="mt-4 text-[13px] text-muted">Choose a voice to see the controls its engine supports.</p>}
+            {hasEmotion && (
+              <div className="mt-4">
+                <p className="text-xs font-semibold text-muted">Emotion</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {EMOTIONS.map((e) => (
+                    <button key={e} onClick={() => setEmotion(emotion === e ? "" : e)} className={cx("rounded-full px-3 py-1.5 text-xs font-semibold transition", emotion === e ? "bg-ink text-white" : "bg-soft text-ink/70 hover:bg-line")}>{e}</button>
+                  ))}
+                </div>
+                <input value={emotion} onChange={(e) => setEmotion(e.target.value)} placeholder="or describe it: warm and encouraging" aria-label="Emotion or style" maxLength={200} className="mt-2 h-10 w-full rounded-full bg-soft px-4 text-[13px] outline-none placeholder:text-muted" />
+                <p className="mt-2 text-xs text-muted">You can also write cues in the text, like [laughing] or [sad]. Each cue applies until the next one.</p>
+              </div>
+            )}
             {controls.map((p) => (
               <label key={p.name} className="mt-4 block text-xs font-semibold text-muted">
                 <span className="flex justify-between">
                   {p.label}
-                  <span className="text-ink">{(params[p.name] ?? p.default).toFixed(p.type === "int" ? 0 : 2)}{p.name === "speed" ? "×" : ""}</span>
+                  <span className="text-ink">{Number(params[p.name] ?? p.default).toFixed(p.type === "int" ? 0 : 2)}{p.name === "speed" ? "×" : ""}</span>
                 </span>
                 <input
                   type="range" min={p.min ?? 0} max={p.max ?? 1} step={p.type === "int" ? 1 : 0.05}
-                  value={params[p.name] ?? p.default}
+                  value={Number(params[p.name] ?? p.default)}
                   onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: Number(e.target.value) }))}
                   className="mt-2 w-full accent-ink"
                 />
               </label>
             ))}
-            {voice && <p className="mt-4 text-xs text-muted">Pitch and emotion are not shown because Piper has no such controls.</p>}
+            {voice && !hasEmotion && <p className="mt-4 text-xs text-muted">This engine has no emotion control. Cues like [laughing] in the text are skipped, not read aloud.</p>}
+          </Card>
+
+          <Card>
+            <CardTitle action={<Badge tone="sky">RVC</Badge>}>Voice changer</CardTitle>
+            <VoiceChangerControls value={rvc} onChange={setRvc} />
           </Card>
         </div>
       </div>

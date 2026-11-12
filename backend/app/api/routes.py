@@ -10,17 +10,19 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Uploa
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+import uuid
 from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..config import Settings, get_settings
-from .. import catalog
+from .. import catalog, runtime_assets
 from ..audio.processing import mp3_available
 from ..db import AuditLog, Character, Generation, Voice, VoiceModel, audit, get_session
 from ..engines.registry import describe_engines
 from ..hardware import detect_hardware
 from ..importer.service import ImportRejected, import_zip, serialize
 from ..tts import service as tts
+from ..vc import service as vc
 
 router = APIRouter(prefix="/api/v1")
 
@@ -155,7 +157,11 @@ def delete_model(
             if character.voice_en == voice.id:
                 character.voice_en = None
         session.delete(voice)
+    for character in session.scalars(select(Character)).all():
+        if (character.rvc or {}).get("model_id") == model_id:
+            character.rvc = None
     tts.manager().unload(model_id)
+    vc.unload(model_id)
     session.delete(model)
     audit(session, "model.delete", model_id=model_id, name=model.name)
     session.commit()
@@ -216,13 +222,15 @@ class CharacterIn(BaseModel):
     voice_en: str | None = None
     default_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     presets: dict = Field(default_factory=dict)
+    #: optional voice changer: {"model_id": "<RVC model id>", "pitch": 0, "index_rate": 0.5}
+    rvc: dict | None = None
 
 
 def _character(c: Character) -> dict:
     return {
         "id": c.id, "name": c.name, "description": c.description, "image_url": c.image_url,
         "voice_ml": c.voice_ml, "voice_en": c.voice_en, "default_speed": c.default_speed,
-        "presets": c.presets,
+        "presets": c.presets, "rvc": c.rvc,
     }
 
 
@@ -230,6 +238,14 @@ def _check_voices(session: Session, body: CharacterIn) -> None:
     for vid in (body.voice_ml, body.voice_en):
         if vid and not session.get(Voice, vid):
             raise HTTPException(422, f"voice '{vid}' does not exist")
+    try:
+        body.rvc = vc.clean_options(body.rvc)
+    except vc.VCRequestError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    if body.rvc:
+        model = session.get(VoiceModel, body.rvc["model_id"])
+        if not model or model.architecture != "rvc":
+            raise HTTPException(422, "rvc.model_id must be an imported RVC model")
 
 
 @router.get("/characters")
@@ -283,12 +299,17 @@ class TTSRequest(BaseModel):
     output_format: str = Field(default="mp3", pattern="^(mp3|wav)$")
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     params: dict[str, float] = Field(default_factory=dict)
+    #: "laughing", "sad", "excited" or a full instruction. Only engines with emotion control act on it.
+    emotion: str | None = Field(default=None, max_length=200)
+    #: voice changer after synthesis: {"model_id": "<RVC model id>", "pitch": 0, "index_rate": 0.5}
+    rvc: dict | None = None
     use_cache: bool = True
 
 
 def _job(job: Generation, cached: bool = False) -> dict:
     data = {
         "job_id": job.id, "status": job.status, "cached": cached, "language": job.language,
+        "kind": job.kind or "tts", "rvc": job.rvc,
         "voice_id": job.voice_id, "character_id": job.character_id, "output_format": job.output_format,
         "text": job.text, "params": job.params, "warnings": job.warnings,
         "created_at": job.created_at.isoformat(),
@@ -321,7 +342,8 @@ def tts_generate(
         job, cached = tts.submit(
             session, settings, text=body.text, voice_id=body.voice_id, character_id=body.character_id,
             language=body.language, output_format=body.output_format,
-            params={"speed": speed, **body.params}, use_cache=body.use_cache,
+            params={"speed": speed, **body.params, **({"emotion": body.emotion.strip()} if body.emotion and body.emotion.strip() else {})},
+            use_cache=body.use_cache, rvc=body.rvc,
         )
     except tts.TTSRequestError as exc:
         raise HTTPException(exc.status, exc.message) from exc
@@ -357,10 +379,80 @@ def get_audio(audio_id: str, format: str | None = None, download: bool = False,
     return Response(data, media_type="audio/mpeg" if fmt == "mp3" else "audio/wav", headers=headers)
 
 
+# ---------------------------------------------------------------- voice changer
+
+@router.post("/vc/convert", status_code=202, dependencies=[Depends(require_key)])
+def convert_audio_file(
+    file: UploadFile = File(...), model_id: str = Form(...), pitch: float = Form(0.0),
+    index_rate: float = Form(0.5), protect: float = Form(0.33),
+    session: Session = Depends(get_session), settings: Settings = Depends(get_settings),
+):
+    """Re-voice an uploaded WAV / MP3 / FLAC / OGG with an RVC model. Poll /tts/jobs/{job_id}."""
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in (".wav", ".mp3", ".flac", ".ogg"):
+        raise HTTPException(415, "upload a WAV, MP3, FLAC or OGG file")
+    upload = settings.staging_dir / f"{uuid.uuid4().hex}{suffix}"
+    size = 0
+    with open(upload, "wb") as out:
+        while chunk := file.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > 100 * 1024 * 1024:
+                out.close()
+                upload.unlink(missing_ok=True)
+                raise HTTPException(413, "audio file is larger than 100 MB")
+            out.write(chunk)
+    try:
+        job = tts.submit_conversion(
+            session, upload_path=upload, filename=Path(file.filename or "audio").name,
+            rvc={"model_id": model_id, "pitch": pitch, "index_rate": index_rate, "protect": protect},
+        )
+    except tts.TTSRequestError as exc:
+        upload.unlink(missing_ok=True)
+        raise HTTPException(exc.status, exc.message) from exc
+    return _job(job)
+
+
+# ---------------------------------------------------------------- runtime bundles
+
+def _runtime(settings: Settings, session: Session) -> list[dict]:
+    rvc_state = vc.status()
+    qwen_ok, qwen_why = tts.get_adapter("qwen3_tts").is_available()
+    qwen_installed = session.scalar(select(VoiceModel.id).where(VoiceModel.architecture == "qwen3_tts")) is not None
+    return [
+        {"id": "rvc", "label": "Voice changer (RVC)", "size_mb": rvc_state["size_mb"],
+         "available": rvc_state["libraries"], "installed": rvc_state["runtime_installed"],
+         "note": "Needed to use imported RVC character voices. One download.",
+         "reason": "" if rvc_state["libraries"] else rvc_state["reason"], **runtime_assets.state("rvc")},
+        {"id": "qwen3", "label": "Qwen3-TTS (English, emotion control)", "size_mb": 2400,
+         "available": qwen_ok, "installed": qwen_installed,
+         "note": "Nine preset voices with emotion control. No Malayalam. About 5x slower than real time on a 2-core CPU.",
+         "reason": "" if qwen_ok else qwen_why, **runtime_assets.state("qwen3")},
+    ]
+
+
+@router.get("/runtime")
+def runtime_bundles(session: Session = Depends(get_session), settings: Settings = Depends(get_settings)):
+    return _runtime(settings, session)
+
+
+@router.post("/runtime/{bundle}/install", status_code=202, dependencies=[Depends(require_key)])
+def install_runtime(bundle: str, session: Session = Depends(get_session), settings: Settings = Depends(get_settings)):
+    entry = next((b for b in _runtime(settings, session) if b["id"] == bundle), None)
+    if entry is None:
+        raise HTTPException(404, "unknown runtime bundle")
+    if not entry["available"]:
+        raise HTTPException(409, entry["reason"])
+    if entry["installed"]:
+        raise HTTPException(409, "already installed")
+    work = (lambda: runtime_assets.install(settings, "rvc")) if bundle == "rvc" else (lambda: runtime_assets.install_qwen(settings))
+    runtime_assets.start(bundle, work)
+    return {"id": bundle, **runtime_assets.state(bundle)}
+
+
 # ---------------------------------------------------------------- history
 
 @router.get("/history")
-def history(q: str = "", voice_id: str = "", language: str = "", limit: int = 50,
+def history(q: str = "", voice_id: str = "", language: str = "", kind: str = "", limit: int = 50,
             session: Session = Depends(get_session)):
     query = select(Generation).order_by(Generation.created_at.desc()).limit(min(max(limit, 1), 200))
     if q:
@@ -369,6 +461,8 @@ def history(q: str = "", voice_id: str = "", language: str = "", limit: int = 50
         query = query.where(Generation.voice_id == voice_id)
     if language:
         query = query.where(Generation.language == language)
+    if kind == "conversion":
+        query = query.where(Generation.kind == "conversion")
     return [_job(j) for j in session.scalars(query).all()]
 
 

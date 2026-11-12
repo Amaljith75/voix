@@ -109,10 +109,11 @@ class PiperEngine(BaseTTSEngine):
         return [code.replace("-", "_").split("_")[0].lower()] if code else []
 
     def get_supported_parameters(self) -> list[ParameterSpec]:
-        return list(self.parameters_for(self.num_speakers))
+        return self.parameters_for({"num_speakers": self.num_speakers})
 
-    @staticmethod
-    def parameters_for(num_speakers: int = 1) -> list[ParameterSpec]:
+    @classmethod
+    def parameters_for(cls, details: dict) -> list[ParameterSpec]:
+        num_speakers = int(details.get("num_speakers") or 1)
         specs = [
             ParameterSpec("speed", "Speed", "float", 1.0, 0.5, 2.0),
             ParameterSpec("variability", "Variability", "float", 0.667, 0.2, 1.0),

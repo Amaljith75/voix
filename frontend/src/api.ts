@@ -68,16 +68,23 @@ export type Character = {
   voice_ml: string | null;
   voice_en: string | null;
   default_speed: number;
+  rvc: RvcOptions | null;
 };
 
-export type Parameter = { name: string; label: string; type: string; default: number; min: number | null; max: number | null };
+export type Parameter = { name: string; label: string; type: string; default: number | string; min: number | null; max: number | null };
+export type RvcOptions = { model_id: string; pitch: number; index_rate: number; protect?: number };
+export type RuntimeBundle = {
+  id: string; label: string; size_mb: number; available: boolean; installed: boolean; note: string; reason: string;
+  state: "idle" | "installing" | "error"; error: string;
+};
 export type Voice = {
   id: string; name: string; description: string; model_id: string; languages: string[];
   license: string; license_status: Model["license_status"]; ready: boolean; reason: string; parameters: Parameter[];
 };
 export type Job = {
   job_id: string; status: "queued" | "processing" | "completed" | "failed"; cached: boolean; language: string;
-  voice_id: string | null; character_id: string | null; text: string; params: Record<string, number>;
+  kind: "tts" | "conversion"; rvc: RvcOptions | null;
+  voice_id: string | null; character_id: string | null; text: string; params: Record<string, number | string>;
   warnings: string[]; created_at: string; audio_url?: string; audio_seconds?: number; generation_seconds?: number;
   chunks?: number; error?: string;
 };
@@ -85,6 +92,27 @@ export type CatalogVoice = {
   id: string; name: string; language: string; gender: string; size_mb: number; license: string;
   license_status: Model["license_status"]; license_note: string; source_url: string; installed: boolean;
 };
+
+/** Poll a queued job until it has completed or failed. */
+export async function follow(job: Job, onUpdate?: (job: Job) => void): Promise<Job> {
+  onUpdate?.(job);
+  while (job.status === "queued" || job.status === "processing") {
+    await new Promise((r) => setTimeout(r, 500));
+    job = await api<Job>(`/tts/jobs/${job.job_id}`);
+    onUpdate?.(job);
+  }
+  return job;
+}
+
+/** Re-voice an audio file with an RVC model. */
+export async function convertFile(file: File, rvc: RvcOptions, onUpdate?: (job: Job) => void): Promise<Job> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("model_id", rvc.model_id);
+  form.append("pitch", String(rvc.pitch));
+  form.append("index_rate", String(rvc.index_rate));
+  return follow(await api<Job>("/vc/convert", { method: "POST", body: form }), onUpdate);
+}
 
 /** Start a generation and resolve when it has completed or failed. */
 export async function generate(body: object, onUpdate?: (job: Job) => void): Promise<Job> {

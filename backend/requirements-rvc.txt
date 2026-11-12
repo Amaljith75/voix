@@ -1,0 +1,7 @@
+# Voice changer (RVC). Install CPU PyTorch first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+transformers>=4.49
+faiss-cpu>=1.8
+soxr>=0.5
+soundfile>=0.13

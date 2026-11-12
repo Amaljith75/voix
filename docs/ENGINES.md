@@ -18,7 +18,8 @@ voice's timbre on top of real TTS output.
 | Indic Parler-TTS (AI4Bharat) | Yes (declared) | Yes | GPU, slow | Apache-2.0 | Phase 3, quality engine |
 | GPT-SoVITS | No text frontend for Malayalam | Yes | GPU | MIT code; each fine-tune has its own terms | Phase 3, English / cloning only |
 | Coqui XTTS-v2 | No (17 languages, Malayalam not among them) | Yes | GPU | Coqui Public Model License: non-commercial | Not for SCOL production |
-| RVC | n/a — converts speech, not text | n/a | GPU preferred | Varies per model, usually undeclared | Optional post-TTS timbre stage |
+| RVC | n/a — converts speech, not text | n/a | CPU works (about 1-2x real time) | Code MIT; each voice model has its own terms, usually undeclared | Built in as the voice changer |
+| Qwen3-TTS 0.6B | No | Yes, with emotion control | CPU, about 5x slower than real time | Apache-2.0 | Built in, optional download |
 
 Piper comes first because it is the only candidate that already runs on the
 development machine (no GPU needed), has ready Malayalam voices, and has a

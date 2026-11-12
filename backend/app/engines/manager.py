@@ -6,7 +6,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from .base import BaseTTSEngine, EngineError
+from .base import BaseTTSEngine, BaseVoiceConverter, EngineError
 from .registry import get_adapter
 
 
@@ -14,11 +14,11 @@ class EngineManager:
     def __init__(self, max_loaded: int = 2, device: str = "cpu") -> None:
         self.max_loaded = max(1, max_loaded)
         self.device = device
-        self._loaded: OrderedDict[str, BaseTTSEngine] = OrderedDict()
+        self._loaded: OrderedDict[str, BaseTTSEngine | BaseVoiceConverter] = OrderedDict()
         self._lock = threading.RLock()
         self.load_seconds: dict[str, float] = {}
 
-    def get(self, model_id: str, architecture: str, model_dir: Path) -> BaseTTSEngine:
+    def get(self, model_id: str, architecture: str, model_dir: Path) -> BaseTTSEngine | BaseVoiceConverter:
         with self._lock:
             if model_id in self._loaded:
                 self._loaded.move_to_end(model_id)

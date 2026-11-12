@@ -21,7 +21,9 @@ def test_import_rvc_end_to_end(client, settings):
     assert model["name"] == "MyVoice" and model["version"] == 1
     assert model["architecture"] == "rvc" and model["kind"] == "voice_conversion"
     assert model["standalone_tts"] is False
-    assert model["inference"]["ready"] is False
+    from app.engines.rvc.engine import RVCEngine
+
+    assert model["inference"]["ready"] is RVCEngine.is_available()[0]
     assert model["license_status"] == "unknown"
     assert any("License unknown" in w for w in model["warnings"])
     assert (Path(settings.models_dir) / model["id"] / "MyVoice" / "MyVoice.pth").exists()

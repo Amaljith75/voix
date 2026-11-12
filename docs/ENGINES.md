@@ -1,6 +1,8 @@
 # Engine recommendation for Malayalam and English
 
-Status: Piper is built in and generates Malayalam and English on CPU. Its
+Status (Phase 3): Piper is built in. RVC (voice conversion) and Qwen3-TTS
+have adapters and run with the AI runtime; see the README for what was and was
+not verified against real weights. Piper Its
 output has been checked for duration, level and format, **not listened to**.
 Language support for the other engines is what each project declares.
 
@@ -18,7 +20,8 @@ voice's timbre on top of real TTS output.
 | Indic Parler-TTS (AI4Bharat) | Yes (declared) | Yes | GPU, slow | Apache-2.0 | Phase 3, quality engine |
 | GPT-SoVITS | No text frontend for Malayalam | Yes | GPU | MIT code; each fine-tune has its own terms | Phase 3, English / cloning only |
 | Coqui XTTS-v2 | No (17 languages, Malayalam not among them) | Yes | GPU | Coqui Public Model License: non-commercial | Not for SCOL production |
-| RVC | n/a — converts speech, not text | n/a | GPU preferred | Varies per model, usually undeclared | Optional post-TTS timbre stage |
+| Qwen3-TTS (Alibaba Qwen) | **No** | Yes (+ zh, ja, ko, de, fr, ru, pt, es, it) | GPU recommended; 0.6B usable on CPU, slowly | Apache-2.0 | Built in (AI runtime). English voices with real emotional delivery (1.7B) |
+| RVC | n/a — converts speech, not text | n/a | CPU about real time, GPU fast | Varies per model, usually undeclared | Built in (AI runtime). Character timbre after TTS, and the Voice Changer |
 
 Piper comes first because it is the only candidate that already runs on the
 development machine (no GPU needed), has ready Malayalam voices, and has a
@@ -39,6 +42,12 @@ server later.
 | --- | --- | --- |
 | IMaSC Malayalam TTS | Piper-compatible | Released under Apache-2.0. Best candidate for commercial use. Not in the starter catalog because its download location could not be confirmed; import it as a ZIP once you have the `.onnx` and `.onnx.json`. |
 | `ml_IN-meera-medium`, `ml_IN-arjun-medium` (rhasspy/piper-voices) | Piper | Trained on the Indic TTS Malayalam corpus; the model card defers to the dataset's own licence. **Treat as unknown until that licence is read.** VOIX flags it as such on import. |
+
+## Recommended setup for SCOL tutors
+
+Malayalam: Piper. English: Qwen3-TTS 1.7B CustomVoice on a GPU machine (emotion
+follows instructions), or Piper / Qwen 0.6B on a laptop. On top: one RVC voice
+per tutor, so a tutor sounds like the same person in both languages.
 
 ## About the Discord voice library
 

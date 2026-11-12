@@ -1,0 +1,18 @@
+# AI runtime: RVC voice conversion, Qwen3-TTS, automatic emotion.
+# Install on top of requirements.txt:
+#   pip install -r requirements-ai.txt
+#   pip install --no-deps qwen-tts==0.1.1     (its pinned Gradio demo UI is not needed)
+# CPU-only PyTorch is much smaller; on Windows/Linux without an NVIDIA GPU use:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+torch>=2.6
+torchaudio>=2.6
+transformers==4.57.3
+accelerate==1.12.0
+faiss-cpu>=1.8
+librosa>=0.10
+scipy>=1.11
+soundfile>=0.12
+einops>=0.8
+torchfcpe>=0.0.4
+# imported by qwen-tts at load time (the SoX program itself is not needed)
+sox>=1.5

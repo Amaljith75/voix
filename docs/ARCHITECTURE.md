@@ -39,7 +39,7 @@ VOIX never calls an LLM. The only input is text plus a voice or character ID.
 | --- | --- | --- |
 | 1 Foundation | Backend, database, secure importer, inspection, detection, model library, studio shell | Done |
 | 2 First engine | Piper adapter, text normalisation, mixed-script routing, sentence chunking, WAV/MP3, jobs, cache, history, starter voices | Done. Open: a listening review of Malayalam pronunciation |
-| 3 Universal models | Indic Parler-TTS, GPT-SoVITS, VITS adapters; RVC post-stage; model lifecycle and VRAM management | |
+| 3 Character voices | RVC post-stage and Voice Changer; Qwen3-TTS; emotion tags, detection and rendering; Hugging Face installer; `/tts/speak`, `/tts/batch` | Done. Open: first run with real RVC / Qwen weights, listening review. Still to do: Indic Parler-TTS, GPT-SoVITS, VITS adapters, VRAM management |
 | 4 Studio | Voice library, real generation controls, waveform player, history | |
 | 5 API + SCOL | Jobs, batch, chunked streaming, API keys per client, rate limits, quotas, signed audio URLs, Expo test app | |
 | 6 Production | Redis/Celery workers, PostgreSQL, S3 storage, Docker + NVIDIA toolkit, benchmarks, security review | |
@@ -47,7 +47,11 @@ VOIX never calls an LLM. The only input is text plus a voice or character ID.
 ## Known gaps
 
 - Detection for RVC, GPT-SoVITS, VITS and XTTS is tested on structural
-  fixtures, not on real community checkpoints.
+  fixtures, not on real community checkpoints. RVC inference is tested with
+  the real network code and tiny random weights.
+- One job worker: a slow Qwen3-TTS job delays the jobs behind it.
+- Hugging Face install tasks live in memory; a restart forgets their progress
+  (installed models are kept).
 - A single shared API key; no per-client keys, rate limiting or quotas.
 - No ONNX graph inspection: an `.onnx` file without a Piper sidecar config is
   reported as unknown.

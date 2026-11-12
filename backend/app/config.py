@@ -23,6 +23,12 @@ class Settings:
     cache_enabled: bool = True
     max_loaded_models: int = 2
     max_text_chars: int = 20000
+    max_hub_bytes: int = 20 * GB
+    max_convert_bytes: int = 100 * 1024**2
+    #: auto | cpu | cuda - for PyTorch engines (RVC, Qwen3-TTS). Piper always runs on CPU.
+    device: str = "auto"
+    #: Hugging Face text-classification model used for automatic emotion; "" turns it off
+    emotion_model: str = "j-hartmann/emotion-english-distilroberta-base"
 
     @property
     def audio_dir(self) -> Path:
@@ -33,11 +39,20 @@ class Settings:
         return self.data_dir / "models"
 
     @property
+    def support_dir(self) -> Path:
+        """Shared helper models: HuBERT content encoder, RMVPE pitch, emotion classifier."""
+        return self.data_dir / "support"
+
+    @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
+
+    @property
     def staging_dir(self) -> Path:
         return self.data_dir / "staging"
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.models_dir, self.staging_dir, self.audio_dir):
+        for d in (self.data_dir, self.models_dir, self.staging_dir, self.audio_dir, self.support_dir, self.uploads_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -60,4 +75,8 @@ def get_settings() -> Settings:
         ),
         cache_enabled=env("VOIX_CACHE", "1") not in ("0", "false", "off"),
         max_loaded_models=int(env("VOIX_MAX_LOADED_MODELS", 2)),
+        max_hub_bytes=int(env("VOIX_MAX_HUB_BYTES", 20 * GB)),
+        max_convert_bytes=int(env("VOIX_MAX_CONVERT_BYTES", 100 * 1024**2)),
+        device=env("VOIX_DEVICE", "auto").lower(),
+        emotion_model=env("VOIX_EMOTION_MODEL", "j-hartmann/emotion-english-distilroberta-base"),
     )

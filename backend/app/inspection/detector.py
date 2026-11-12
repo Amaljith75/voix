@@ -21,6 +21,8 @@ MAX_CONFIG_BYTES = 5 * 1024 * 1024
 
 ARCHITECTURE_LABELS = {
     "piper": "Piper (VITS / ONNX)",
+    "qwen3_tts": "Qwen3-TTS",
+    "qwen3_tts_tokenizer": "Qwen3-TTS speech tokenizer only",
     "xtts": "Coqui XTTS",
     "gpt_sovits": "GPT-SoVITS",
     "vits": "VITS",
@@ -90,6 +92,7 @@ def detect_package(root: Path, files: list[dict]) -> tuple[Detection, list[Check
 
     det = (
         _piper(onnx, configs)
+        or _qwen3(names, configs)
         or _xtts(names, reports, configs)
         or _gpt_sovits(names, reports)
         or _rvc(reports, index_files)
@@ -144,6 +147,52 @@ def _piper(onnx, configs) -> Detection | None:
     if onnx and not any(n + ".json" in configs for n in onnx):
         return None
     return None
+
+
+def _qwen3(names, configs) -> Detection | None:
+    root_cfg = next(((k, c) for k, c in sorted(configs.items(), key=lambda kv: kv[0].count("/"))
+                     if c.get("model_type") == "qwen3_tts"), None)
+    if root_cfg is None:
+        tok = next((k for k, c in configs.items() if str(c.get("model_type", "")).startswith("qwen3_tts_tokenizer")), None)
+        if tok is None:
+            return None
+        return Detection(
+            architecture="qwen3_tts_tokenizer", kind="unknown", completeness="incomplete", confidence="high",
+            evidence=[f"{tok} declares a Qwen3-TTS speech tokenizer"],
+            missing=["a Qwen3-TTS model (CustomVoice, VoiceDesign or Base). Every model repository already "
+                     "includes this tokenizer in speech_tokenizer/, so this package is not needed on its own."],
+        )
+    from ..engines.qwen3_engine import describe_config
+
+    path, cfg = root_cfg
+    prefix = path[: -len("config.json")]
+    info = describe_config(cfg)
+    base = set(names)
+    missing = []
+    if not any(n.startswith(prefix + "speech_tokenizer/") and n.endswith("config.json") for n in base):
+        missing.append("speech_tokenizer/ (the 12 Hz audio tokenizer)")
+    if not any(n.startswith(prefix) and n.count("/") == prefix.count("/") and n.endswith(".safetensors") for n in base):
+        missing.append("model weights (*.safetensors)")
+    if not ({prefix + "vocab.json", prefix + "tokenizer.json"} & base):
+        missing.append("text tokenizer (vocab.json + merges.txt)")
+    kinds = {"custom_voice": "built-in speakers", "voice_design": "voice described in words", "base": "voice cloning from a reference clip"}
+    return Detection(
+        architecture="qwen3_tts", kind="tts",
+        completeness="incomplete" if missing else "complete", standalone_tts=not missing, confidence="high",
+        evidence=[f"{path} declares model_type qwen3_tts, tts_model_type {info['model_type']}, size {info['size']}"],
+        languages=info["languages"],
+        language_note="Qwen3-TTS speaks Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, "
+                      "Spanish and Italian. It has no Malayalam; pair it with a Malayalam Piper voice in a character.",
+        dependencies=["qwen-tts", "torch", "transformers", "librosa"],
+        required_config=["config.json", "speech_tokenizer/", "generation_config.json"],
+        missing=missing,
+        device_support={"cpu": "works, slow (several seconds per sentence)", "gpu": "recommended (CUDA, 4-8 GB VRAM)"},
+        warnings=[] if info["follows_instructions"] else [
+            "This model does not follow style instructions, so emotions are rendered only through speed and pitch. "
+            "Use the 1.7B CustomVoice or VoiceDesign model for emotional delivery."],
+        details={"qwen_model_type": info["model_type"], "size": info["size"], "speakers": info["speakers"],
+                 "follows_instructions": info["follows_instructions"], "summary": kinds.get(info["model_type"], "")},
+    )
 
 
 def _xtts(names, reports, configs) -> Detection | None:

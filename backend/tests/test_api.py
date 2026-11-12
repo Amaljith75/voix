@@ -32,8 +32,9 @@ def test_import_rvc_end_to_end(client, settings):
 
 
 def test_duplicate_and_versioning(client):
-    assert upload(client, fx.rvc_zip(), "Voice.zip").status_code == 201
-    assert upload(client, fx.rvc_zip(), "Voice.zip").status_code == 409
+    archive = fx.rvc_zip()  # one archive: ZIP entries carry a timestamp, so rebuilding it can change the bytes
+    assert upload(client, archive, "Voice.zip").status_code == 201
+    assert upload(client, archive, "Voice.zip").status_code == 409
     other = fx.make_zip({"Voice.pth": fx.torch_zip_bytes({**fx.RVC, "info": "500epoch"})})
     assert upload(client, other, "Voice.zip").json()["version"] == 2
 

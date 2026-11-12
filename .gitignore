@@ -10,3 +10,4 @@ backend/data/
 .DS_Store
 backend/build/
 backend/*.spec
+backend/dist-ai/

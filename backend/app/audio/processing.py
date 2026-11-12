@@ -27,6 +27,20 @@ def resample(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndar
     return np.interp(positions, np.arange(samples.size), samples).astype(np.float32)
 
 
+def resample_hq(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Band-limited polyphase resampling (SciPy). Falls back to linear when SciPy is absent."""
+    if source_rate == target_rate or samples.size == 0:
+        return samples
+    try:
+        from math import gcd
+
+        from scipy.signal import resample_poly
+    except ImportError:
+        return resample(samples, source_rate, target_rate)
+    g = gcd(int(source_rate), int(target_rate))
+    return resample_poly(samples, target_rate // g, source_rate // g).astype(np.float32)
+
+
 def silence(ms: int, sample_rate: int) -> np.ndarray:
     return np.zeros(int(sample_rate * ms / 1000), dtype=np.float32)
 
@@ -97,3 +111,23 @@ def wav_to_mp3(wav_bytes: bytes, bitrate_kbps: int = 128) -> bytes:
     encoder.set_quality(2)
     encoder.silence()
     return bytes(encoder.encode(pcm)) + bytes(encoder.flush())
+
+
+def decode_audio(path) -> tuple[np.ndarray, int]:
+    """Read an uploaded file (MP3, WAV, FLAC, OGG; M4A/AAC/WEBM with FFmpeg) as float32 mono."""
+    try:
+        import soundfile as sf
+
+        data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+        return np.ascontiguousarray(data.mean(axis=1), dtype=np.float32), int(rate)
+    except Exception as first:  # libsndfile cannot read it: try FFmpeg
+        exe = shutil.which("ffmpeg")
+        if not exe:
+            raise RuntimeError(f"cannot read this audio file ({first}). Install FFmpeg for M4A/AAC/WEBM.") from first
+        done = subprocess.run(
+            [exe, "-loglevel", "error", "-i", str(path), "-ac", "1", "-ar", "44100", "-f", "f32le", "pipe:1"],
+            capture_output=True, timeout=600,
+        )
+        if done.returncode != 0 or not done.stdout:
+            raise RuntimeError(f"cannot read this audio file: {done.stderr.decode(errors='replace')[:300]}") from first
+        return np.frombuffer(done.stdout, dtype="<f4").copy(), 44100

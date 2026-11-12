@@ -68,19 +68,70 @@ export type Character = {
   voice_ml: string | null;
   voice_en: string | null;
   default_speed: number;
+  style: string;
+  rvc_model_id: string | null;
+  rvc_settings: Record<string, number | string>;
+  emotion_mode: string;
+  default_emotion: string;
+  emotion_strength: number;
 };
 
-export type Parameter = { name: string; label: string; type: string; default: number; min: number | null; max: number | null };
+export type Parameter = {
+  name: string; label: string; type: string; default: number | string; min: number | null; max: number | null; choices?: string[];
+};
 export type Voice = {
-  id: string; name: string; description: string; model_id: string; languages: string[];
+  id: string; name: string; description: string; model_id: string; languages: string[]; architecture: string | null;
   license: string; license_status: Model["license_status"]; ready: boolean; reason: string; parameters: Parameter[];
+  settings: Record<string, string | number | boolean>; follows_instructions: boolean; qwen_model_type: string | null;
+};
+export type Segment = {
+  text: string; language?: string; emotion?: string; source?: string; confidence?: number | null;
+  rendered_by?: string[]; pitch?: number; start: number; end: number;
 };
 export type Job = {
-  job_id: string; status: "queued" | "processing" | "completed" | "failed"; cached: boolean; language: string;
-  voice_id: string | null; character_id: string | null; text: string; params: Record<string, number>;
+  job_id: string; kind: "tts" | "convert"; status: "queued" | "processing" | "completed" | "failed"; cached: boolean;
+  language: string; voice_id: string | null; character_id: string | null; text: string; params: Record<string, number | string>;
   warnings: string[]; created_at: string; audio_url?: string; audio_seconds?: number; generation_seconds?: number;
-  chunks?: number; error?: string;
+  chunks?: number; error?: string; segments?: Segment[]; model_ids?: string[]; sample_rate?: number;
 };
+export type ConversionModel = Model & { parameters: Parameter[] };
+export type EmotionInfo = {
+  emotions: { id: string; label: string; instruct: string }[];
+  tag_syntax: string;
+  classifier: { model: string | null; installed: boolean; loaded: boolean; error: string; languages: string[] };
+};
+export type HubCandidate = { kind: string; label: string; files: string[]; size: number; has_index?: boolean };
+export type HubInspect = {
+  repo_id: string; revision: string; subfolder: string; license: string; gated: boolean;
+  files: { path: string; size: number; fetchable: boolean }[]; candidates: HubCandidate[];
+};
+export type HubTask = {
+  id: string; label: string; status: "running" | "completed" | "failed"; done_bytes: number; total_bytes: number;
+  result: Record<string, string> | null; error: string; started: number;
+};
+export type SupportModel = { id: string; label: string; purpose: string; repo: string; size_mb: number; license: string; installed: boolean };
+
+/** Poll a background download/install task until it ends. */
+export async function waitTask(task: HubTask, onUpdate?: (t: HubTask) => void): Promise<HubTask> {
+  onUpdate?.(task);
+  while (task.status === "running") {
+    await new Promise((r) => setTimeout(r, 700));
+    task = await api<HubTask>(`/hub/tasks/${task.id}`);
+    onUpdate?.(task);
+  }
+  return task;
+}
+
+/** Poll any job (TTS or conversion) until it ends. */
+export async function waitJob(job: Job, onUpdate?: (job: Job) => void): Promise<Job> {
+  onUpdate?.(job);
+  while (job.status === "queued" || job.status === "processing") {
+    await new Promise((r) => setTimeout(r, 500));
+    job = await api<Job>(`/tts/jobs/${job.job_id}`);
+    onUpdate?.(job);
+  }
+  return job;
+}
 export type CatalogVoice = {
   id: string; name: string; language: string; gender: string; size_mb: number; license: string;
   license_status: Model["license_status"]; license_note: string; source_url: string; installed: boolean;
@@ -97,7 +148,7 @@ export async function generate(body: object, onUpdate?: (job: Job) => void): Pro
   }
   return job;
 }
-export type Health = { status: string; version: string; models: number; tts_ready: boolean };
+export type Health = { status: string; version: string; models: number; tts_ready: boolean; conversion_ready?: boolean };
 export type Config = { auth_required: boolean; max_upload_mb: number; max_extracted_mb: number; max_zip_entries: number; database: string };
 
 const KEY = "voix.apiKey";
@@ -148,11 +199,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 /** Upload with progress. fetch() cannot report upload progress, so this uses XHR. */
 export function importModel(file: File, onProgress: (fraction: number) => void): Promise<Model> {
+  const form = new FormData();
+  form.append("file", file);
+  return uploadForm<Model>("/models/import", form, onProgress);
+}
+
+export function uploadForm<T>(path: string, form: FormData, onProgress: (fraction: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file);
-    xhr.open("POST", "/api/v1/models/import");
+    xhr.open("POST", `/api/v1${path}`);
     const key = getApiKey();
     if (key) xhr.setRequestHeader("X-API-Key", key);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
@@ -185,5 +240,6 @@ export const formatBytes = (n: number) => {
 
 export const LANGUAGE_NAMES: Record<string, string> = {
   ml: "Malayalam", en: "English", hi: "Hindi", ta: "Tamil", zh: "Chinese", ja: "Japanese", ko: "Korean", yue: "Cantonese",
+  de: "German", fr: "French", ru: "Russian", pt: "Portuguese", es: "Spanish", it: "Italian",
 };
 export const languageName = (code: string) => LANGUAGE_NAMES[code] ?? code.toUpperCase();

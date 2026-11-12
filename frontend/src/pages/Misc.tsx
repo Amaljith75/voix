@@ -1,10 +1,85 @@
-import { Check, Download, History as HistoryIcon, Mic2, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Check, Download, History as HistoryIcon, Mic2, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
+import type { FormEvent } from "react";
 import { useState } from "react";
-import type { CatalogVoice, Job, Voice } from "../api";
-import { api, generate, languageName } from "../api";
+import type { CatalogVoice, Job, Model, Voice } from "../api";
+import { api, generate, languageName, uploadForm } from "../api";
 import { LicenseBadge } from "../components/ModelBits";
 import { Player } from "../components/Player";
 import { Badge, Button, Card, CardTitle, Empty, LoadState, Notice, PageHeader, useLoad } from "../components/ui";
+
+const input = "h-11 w-full rounded-2xl bg-soft px-4 text-sm outline-none placeholder:text-muted focus:ring-2 focus:ring-ink/10";
+
+/** Make another voice on a Qwen3-TTS model: a built-in speaker, a described voice, or a clone. */
+function QwenVoiceForm({ onDone }: { onDone: () => void }) {
+  const models = useLoad(() => api<Model[]>("/models"));
+  const qwen = (models.data ?? []).filter((m) => m.architecture === "qwen3_tts" && m.completeness === "complete");
+  const [modelId, setModelId] = useState("");
+  const full = useLoad(() => (modelId ? api<Model>(`/models/${modelId}`) : Promise.resolve(null)), [modelId]);
+  const details = (full.data?.report?.detection.details ?? {}) as { qwen_model_type?: string; speakers?: string[]; size?: string };
+  const [name, setName] = useState("");
+  const [speaker, setSpeaker] = useState("");
+  const [description, setDescription] = useState("");
+  const [refFile, setRefFile] = useState<File | null>(null);
+  const [refText, setRefText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!qwen.length) return null;
+  const type = details.qwen_model_type;
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const settings = type === "custom_voice" ? { speaker } : type === "voice_design" ? { voice_description: description } : {};
+      const voice = await api<Voice>("/voices", { method: "POST", body: JSON.stringify({ model_id: modelId, name, settings }) });
+      if (type === "base" && refFile) {
+        const form = new FormData();
+        form.append("file", refFile);
+        form.append("ref_text", refText);
+        await uploadForm(`/voices/${voice.id}/reference`, form, () => {});
+      }
+      setName("");
+      onDone();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mt-4">
+      <CardTitle>New Qwen3-TTS voice</CardTitle>
+      <form onSubmit={submit} className="grid gap-3 md:grid-cols-2">
+        <select required value={modelId} onChange={(e) => setModelId(e.target.value)} aria-label="Qwen3-TTS model" className={input}>
+          <option value="">Choose a Qwen3-TTS model</option>
+          {qwen.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Voice name, e.g. Leo English" aria-label="Voice name" className={input} />
+        {type === "custom_voice" && (
+          <select required value={speaker} onChange={(e) => setSpeaker(e.target.value)} aria-label="Speaker" className={input}>
+            <option value="">Built-in speaker</option>
+            {details.speakers?.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+          </select>
+        )}
+        {type === "voice_design" && (
+          <textarea required value={description} onChange={(e) => setDescription(e.target.value)} aria-label="Voice description"
+            placeholder="Describe the voice: e.g. a bright, playful young boy, quick and bouncy, slightly high pitch" className={`${input} h-20 py-3 md:col-span-2`} />
+        )}
+        {type === "base" && (
+          <>
+            <input required type="file" accept="audio/*,.mp3,.wav,.flac,.ogg" onChange={(e) => setRefFile(e.target.files?.[0] ?? null)} aria-label="Reference clip" className={`${input} py-2.5`} />
+            <input value={refText} onChange={(e) => setRefText(e.target.value)} placeholder="Exact words spoken in the clip (better cloning)" aria-label="Reference transcript" className={input} />
+            <p className="text-xs text-muted md:col-span-2">A clean 3-15 second clip of one speaker. Only clone a voice you have the right to use.</p>
+          </>
+        )}
+        {error && <div className="md:col-span-2"><Notice tone="red">{error}</Notice></div>}
+        <Button type="submit" disabled={busy || !modelId || !name.trim()} className="md:col-span-2"><Plus size={15} /> {busy ? "Saving…" : "Add voice"}</Button>
+      </form>
+    </Card>
+  );
+}
 
 export function VoiceLibraryPage() {
   const voices = useLoad(() => api<Voice[]>("/voices"));
@@ -48,9 +123,12 @@ export function VoiceLibraryPage() {
               <LicenseBadge model={v} />
             </div>
             {!v.ready && <p className="mt-3 text-xs text-amber-800">{v.reason}</p>}
+            <button onClick={async () => { if (window.confirm(`Delete voice "${v.name}"?`)) { await api(`/voices/${v.id}`, { method: "DELETE" }); voices.reload(); } }}
+              className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-red-700 hover:underline"><Trash2 size={12} /> Delete voice</button>
           </Card>
         ))}
       </div>
+      <QwenVoiceForm onDone={voices.reload} />
 
       <Card className="mt-4">
         <CardTitle>Starter voices</CardTitle>

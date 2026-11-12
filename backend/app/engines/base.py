@@ -72,3 +72,38 @@ class BaseTTSEngine(ABC):
     @abstractmethod
     def validate_model(self, model_dir: Path) -> list[str]:
         """Return a list of problems; empty means the package is loadable."""
+
+
+class BaseVoiceConverter(ABC):
+    """Adapter contract for speech-to-speech voice conversion (RVC and alike).
+
+    A converter has no text input. It takes speech and returns the same words in
+    another timbre, so VOIX runs it after a TTS engine or on uploaded audio.
+    """
+
+    architecture: str = ""
+    kind: str = "voice_conversion"
+    supports_true_streaming: bool = False
+
+    @classmethod
+    @abstractmethod
+    def is_available(cls) -> tuple[bool, str]: ...
+
+    @abstractmethod
+    def load_model(self, model_dir: Path, device: str = "cpu") -> None: ...
+
+    @abstractmethod
+    def unload_model(self) -> None: ...
+
+    @abstractmethod
+    def convert(self, samples, sample_rate: int, **params) -> AudioResult:
+        """``samples`` is float32 mono. ``params`` come from get_supported_parameters()."""
+
+    @abstractmethod
+    def get_model_info(self) -> dict: ...
+
+    @abstractmethod
+    def get_supported_parameters(self) -> list[ParameterSpec]: ...
+
+    @abstractmethod
+    def validate_model(self, model_dir: Path) -> list[str]: ...

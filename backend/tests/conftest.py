@@ -21,8 +21,8 @@ def torch_zip_bytes(obj, protocol: int = 2) -> bytes:
     """A torch.save-style ZIP container around ``obj`` (no tensors)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("archive/data.pkl", pickle.dumps(obj, protocol=protocol))
-        zf.writestr("archive/version", "3\n")
+        for name, data in (("archive/data.pkl", pickle.dumps(obj, protocol=protocol)), ("archive/version", "3\n")):
+            zf.writestr(zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0)), data)
     return buf.getvalue()
 
 
@@ -65,7 +65,8 @@ def make_zip(entries: dict[str, bytes | str]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, data in entries.items():
-            zf.writestr(name, data)
+            # fixed timestamp: the same entries always give the same bytes (and the same SHA-256)
+            zf.writestr(zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0)), data, zipfile.ZIP_DEFLATED)
     return buf.getvalue()
 
 

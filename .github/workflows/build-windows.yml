@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     paths: ["backend/**", "frontend/**", ".github/workflows/build-windows.yml"]
+  # Pull requests are built and tested the same way; only main publishes a release.
+  pull_request:
+    paths: ["backend/**", "frontend/**", ".github/workflows/build-windows.yml"]
   workflow_dispatch:
 
 permissions:
@@ -87,14 +90,97 @@ jobs:
           name: VOIX-windows
           path: backend/dist/VOIX.exe
 
+  build-ai:
+    # VOIX-AI: the same app plus PyTorch, for RVC character voices, Qwen3-TTS and emotion detection.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build studio UI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the AI runtime (CPU PyTorch)
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.txt
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-ai.txt
+          pip install --no-deps qwen-tts==0.1.1
+
+      - name: Test backend with the AI runtime (real RVC network, tiny weights)
+        working-directory: backend
+        env:
+          PYTHONUTF8: "1"
+        run: python -m pytest -q -rs
+
+      - name: Package VOIX-AI (one folder)
+        working-directory: backend
+        run: |
+          pip install pyinstaller
+          pyinstaller --noconfirm --onedir --name VOIX --console --distpath dist-ai --add-data "../frontend/dist:frontend" --collect-submodules uvicorn --collect-all piper --collect-all onnxruntime --collect-all qwen_tts --collect-all torchfcpe --collect-submodules transformers.models.hubert --collect-data librosa --copy-metadata qwen-tts voix_launcher.py
+
+      - name: Smoke test VOIX-AI (RVC conversion inside the packaged app)
+        shell: pwsh
+        working-directory: backend
+        run: |
+          $api = "http://127.0.0.1:8766/api/v1"
+          $proc = Start-Process -FilePath dist-ai/VOIX/VOIX.exe -ArgumentList "--no-browser","--port","8766" -PassThru
+          try {
+            $up = $false
+            foreach ($i in 1..90) {
+              Start-Sleep -Seconds 2
+              try { if ((Invoke-RestMethod "$api/health").conversion_ready) { $up = $true; break } } catch {}
+            }
+            if (-not $up) { throw "VOIX-AI did not start with RVC ready" }
+            $env:PYTHONUTF8 = "1"
+            python ci_smoke_ai.py dist-ai/VOIX/voix-data $api
+            if ($LASTEXITCODE -ne 0) { throw "AI smoke test failed" }
+          } finally {
+            Stop-Process -Id $proc.Id -Force
+          }
+          Remove-Item -Recurse -Force dist-ai/VOIX/voix-data
+          Compress-Archive -Path dist-ai/VOIX -DestinationPath VOIX-AI-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VOIX-AI-windows
+          path: backend/VOIX-AI-windows.zip
+
+  release:
+    if: github.event_name != 'pull_request'
+    needs: [build, build-ai]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.${{ github.run_number }}
-          name: VOIX v0.2.${{ github.run_number }}
+          tag_name: v0.3.${{ github.run_number }}
+          name: VOIX v0.3.${{ github.run_number }}
           make_latest: true
-          files: backend/dist/VOIX.exe
+          files: |
+            out/VOIX-windows/VOIX.exe
+            out/VOIX-AI-windows/VOIX-AI-windows.zip
           body: |
-            Download **VOIX.exe** and double-click it. It opens the studio in your browser.
+            **VOIX.exe**: double-click it. Piper voices only, small and fast.
 
-            Includes the Piper engine. Add a voice in Voice Library, then generate in Voice Studio.
+            **VOIX-AI-windows.zip**: unzip, then run `VOIX\VOIX.exe`. Adds RVC character voices,
+            the Voice Changer (re-voice an MP3), Qwen3-TTS and automatic emotion. Larger and slower to start.
+
+            Add voices in Voice Library or from the Hugging Face page, then generate in Voice Studio.

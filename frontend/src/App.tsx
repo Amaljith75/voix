@@ -1,5 +1,5 @@
 import {
-  AudioLines, History as HistoryIcon, LayoutGrid, Library, Mic2, PackagePlus, Settings as SettingsIcon, TerminalSquare, Users,
+  AudioLines, CloudDownload, History as HistoryIcon, LayoutGrid, Library, Mic2, PackagePlus, Settings as SettingsIcon, TerminalSquare, Users, Wand2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Health } from "./api";
@@ -8,6 +8,8 @@ import { cx, useLoad } from "./components/ui";
 import ApiPlayground from "./pages/ApiPlayground";
 import Characters from "./pages/Characters";
 import Dashboard from "./pages/Dashboard";
+import HuggingFace from "./pages/HuggingFace";
+import VoiceChanger from "./pages/VoiceChanger";
 import ModelLibrary from "./pages/ModelLibrary";
 import ModelManager from "./pages/ModelManager";
 import Settings from "./pages/Settings";
@@ -17,7 +19,9 @@ import VoiceStudio from "./pages/VoiceStudio";
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, page: Dashboard },
   { id: "studio", label: "Voice Studio", icon: AudioLines, page: VoiceStudio },
+  { id: "changer", label: "Voice Changer", icon: Wand2, page: VoiceChanger },
   { id: "voices", label: "Voice Library", icon: Mic2, page: VoiceLibrary },
+  { id: "huggingface", label: "Hugging Face", icon: CloudDownload, page: HuggingFace },
   { id: "models", label: "Model Library", icon: Library, page: ModelLibrary },
   { id: "manager", label: "Model Manager", icon: PackagePlus, page: ModelManager },
   { id: "history", label: "Generation History", icon: HistoryIcon, page: History },
